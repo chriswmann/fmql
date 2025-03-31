@@ -1,0 +1,27 @@
+[package]
+name = "ls-rs"
+version = "0.1.0"
+edition = "2021"
+authors = ["Chris Mann"]
+description = "A fast and feature-rich file manager written in Rust"
+license = "MIT"
+repository = "https://github.com/chriswmann/rs"
+homepage = "https://github.com/chriswmann/rs"
+keywords = ["file-manager", "filesystem", "ls", "directory", "file-listing", "cli"]
+categories = ["filesystem", "command-line-utilities"]
+readme = "README.md"
+include = [
+    "src/**/*.rs",
+    "README.md",
+    "LICENSE"
+]
+
+[dependencies]
+chrono = "0.4.34"
+users = "0.11.0"
+termion = "4.0.0"
+clap = { version = "4.5.1", features = ["derive"] }
+thiserror = "1.0.57"
+
+[dev-dependencies]
+tempfile = "3.10.0"
