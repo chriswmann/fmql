@@ -1,6 +1,6 @@
 [package]
 name = "fmql"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 authors = ["Chris Mann"]
 description = "A fast and feature-rich file manager written in Rust"
