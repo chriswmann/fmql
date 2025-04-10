@@ -1,5 +1,5 @@
 [package]
-name = "file-manager"
+name = "ls-rs"
 version = "0.2.0"
 edition = "2024"
 authors = ["Chris Mann"]
@@ -7,7 +7,7 @@ description = "A fast and feature-rich file manager written in Rust"
 license = "MIT"
 repository = "https://github.com/chriswmann/ls-rs"
 homepage = "https://github.com/chriswmann/ls-rs"
-keywords = ["file-manager", "file-listing", "cli"]
+keywords = ["file-manager", "file-listing", "cli", "filesystem", "ls"]
 categories = ["filesystem", "command-line-utilities"]
 readme = "README.md"
 include = [

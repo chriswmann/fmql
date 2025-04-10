@@ -8,8 +8,8 @@
 //! 
 //! Basic file listing:
 //! ```rust
-//! use file_manager::cli::{Args, GroupByOption, SortOption, OutputFormat};
-//! use file_manager::file::list_directory;
+//! use ls_rs::cli::{Args, GroupByOption, SortOption, OutputFormat};
+//! use ls_rs::file::list_directory;
 //! use std::path::PathBuf;
 //! 
 //! let args = Args {
@@ -33,7 +33,7 @@
 //!
 //! Using SQL-like queries:
 //! ```no_run
-//! use file_manager::sql::{parse_sql, execute_query};
+//! use ls_rs::sql::{parse_sql, execute_query};
 //! 
 //! // Find all text files in the Documents folder
 //! let query = parse_sql("SELECT * FROM ~/Documents WHERE extension = '.txt'").unwrap();

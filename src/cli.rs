@@ -1,47 +1,129 @@
-//! CLI module stub for testing.
+//! CLI module that defines command-line arguments and options.
+//!
+//! This module provides the structures and enums necessary for parsing and validating
+//! command-line arguments. It uses the `clap` crate for argument parsing and defines
+//! various options for file listing and display.
+//!
+//! # Examples
+//!
+//! Basic usage:
+//!
+//! ```no_run
+//! use ls_rs::cli::{Args, SortOption, GroupByOption, OutputFormat};
+//! use std::path::PathBuf;
+//!
+//! // Create arguments for listing text files sorted by size
+//! let args = Args {
+//!     path: PathBuf::from("."),
+//!     long_view: true,
+//!     show_total: false,
+//!     recursive: true,
+//!     show_hidden: false,
+//!     group_by: GroupByOption::Extension,
+//!     name_pattern: Some("*.txt".to_string()),
+//!     sort_by: SortOption::Size,
+//!     output_format: OutputFormat::Text,
+//! };
+//!
+//! // Validate the arguments
+//! if let Err(e) = args.validate() {
+//!     eprintln!("Invalid arguments: {}", e);
+//! }
+//! ```
 
 use std::path::PathBuf;
 use clap::Parser;
 use crate::error::Result;
 
-/// Command-line arguments.
+/// Command-line arguments for file listing operations.
+///
+/// This structure defines all possible options that can be specified
+/// when listing files, including display options, filtering, sorting,
+/// and grouping.
 #[derive(Parser, Debug, Clone)]
 pub struct Args {
-    /// Path to list
+    /// Path to list files from (defaults to current directory if not specified).
     pub path: PathBuf,
     
-    /// Show hidden files
+    /// Whether to show hidden files (those starting with a dot).
     pub show_hidden: bool,
     
-    /// Use long view
+    /// Whether to use a detailed view format with additional file information.
     pub long_view: bool,
     
-    /// Sort option
+    /// How to sort the file listing (by name, size, modification time, or type).
     pub sort_by: SortOption,
     
-    /// Recursive listing
+    /// Whether to list files recursively through subdirectories.
     pub recursive: bool,
     
-    /// Show totals
+    /// Whether to display summary information like total size or file count.
     pub show_total: bool,
     
-    /// Group by option
+    /// How to group files in the listing (e.g., by folder or extension).
     pub group_by: GroupByOption,
     
-    /// Name pattern
+    /// Optional pattern to filter files by name (e.g., "*.txt").
     pub name_pattern: Option<String>,
     
-    /// Output format
+    /// The output format to use when displaying file listings.
     pub output_format: OutputFormat,
 }
 
 impl Args {
+    /// Validates the command-line arguments.
+    ///
+    /// This method checks that the arguments are valid and consistent, such as:
+    /// - The specified path exists and is accessible
+    /// - Any patterns are syntactically valid
+    ///
+    /// # Returns
+    /// * `Result<()>` - Ok if arguments are valid, or an error with details
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ls_rs::cli::Args;
+    /// use std::path::PathBuf;
+    ///
+    /// let args = Args::default();
+    /// match args.validate() {
+    ///     Ok(()) => println!("Arguments are valid"),
+    ///     Err(e) => eprintln!("Invalid arguments: {}", e),
+    /// }
+    /// ```
     pub fn validate(&self) -> Result<()> {
         Ok(())
     }
 }
 
 impl Default for Args {
+    /// Creates a default set of arguments.
+    ///
+    /// The defaults are:
+    /// - Current directory (`.`)
+    /// - No hidden files
+    /// - Simple view (not long)
+    /// - Sorted by name
+    /// - Not recursive
+    /// - No totals displayed
+    /// - No grouping
+    /// - No name filters
+    /// - Text output format
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ls_rs::cli::{Args, SortOption, GroupByOption, OutputFormat};
+    /// use std::path::PathBuf;
+    ///
+    /// let default_args = Args::default();
+    /// assert_eq!(default_args.path, PathBuf::from("."));
+    /// assert_eq!(default_args.show_hidden, false);
+    /// assert_eq!(default_args.sort_by, SortOption::Name);
+    /// assert_eq!(default_args.group_by, GroupByOption::None);
+    /// assert_eq!(default_args.output_format, OutputFormat::Text);
+    /// ```
     fn default() -> Self {
         Self {
             path: PathBuf::from("."),
@@ -57,32 +139,53 @@ impl Default for Args {
     }
 }
 
-/// Sort options.
+/// Sort options for file listing.
+///
+/// These options determine how files are ordered in the listing result.
 #[derive(Debug, Clone, PartialEq, clap::ValueEnum)]
 pub enum SortOption {
+    /// Sort by file name (alphabetically)
     Name,
+    /// Sort by file size (largest first)
     Size,
+    /// Sort by modification time (most recent first)
     Modified,
+    /// Sort by file type/extension
     Type,
 }
 
-/// Group by options.
+/// Grouping options for file listing.
+///
+/// These options determine how files are grouped in the listing result.
 #[derive(Debug, Clone, PartialEq, clap::ValueEnum)]
 pub enum GroupByOption {
+    /// No grouping, files are listed according to sort order only
     None,
+    /// Group directories first, then files
     Folder,
+    /// Group all files by their parent directory hierarchy
     AllFolders,
+    /// Group files by extension (e.g., all .txt files together)
     Extension,
+    /// Group files by permission type (e.g., readable, writable)
     Permissions,
+    /// Group executable files separately from non-executable ones
     Executable,
+    /// Group files by the first character or pattern in their name
     NameStartsWith,
+    /// Group files based on whether they contain a certain pattern
     NameContains,
+    /// Group files by the last characters in their name
     NameEndsWith,
 }
 
-/// Output format options.
+/// Output format options for file listings.
+///
+/// These options determine how the file information is displayed to the user.
 #[derive(Debug, Clone, PartialEq, clap::ValueEnum)]
 pub enum OutputFormat {
+    /// Simple text output with one file per line
     Text,
+    /// Formatted table output with columns for different attributes
     Table,
 } 

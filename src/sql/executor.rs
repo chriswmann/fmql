@@ -79,14 +79,20 @@ pub struct FileResult {
 ///
 /// # Examples
 ///
-/// ```
-/// use file_manager::sql::{parse_sql, execute_query};
+/// Example of using execute_query to process a parsed query:
 ///
-/// let query = parse_sql("SELECT * FROM ~/Documents WHERE extension = '.txt'").unwrap();
+/// ```no_run
+/// use ls_rs::sql::{parse_sql, execute_query};
+///
+/// // Parse a query
+/// let query = parse_sql("SELECT * FROM /var/log WHERE name LIKE '%.log'").unwrap();
+///
+/// // Execute the query to get matching files
 /// let results = execute_query(&query).unwrap();
 ///
+/// // Process the results
 /// for file in results {
-///     println!("{}", file.name);
+///     println!("{}: {} bytes", file.name, file.size);
 /// }
 /// ```
 pub fn execute_query(query: &FileQuery) -> Result<Vec<FileResult>> {

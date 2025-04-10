@@ -1,6 +1,6 @@
-use file_manager::cli::{Args, GroupByOption, SortOption, OutputFormat};
-use file_manager::file::list_directory;
-use file_manager::display::display_file_list;
+use ls_rs::cli::{Args, GroupByOption, SortOption, OutputFormat};
+use ls_rs::file::list_directory;
+use ls_rs::display::display_file_list;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;

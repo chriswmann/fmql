@@ -1,34 +1,95 @@
-//! File module stub for testing.
+//! File management module that provides core functionality for accessing and manipulating files.
+//!
+//! This module contains the structures and functions needed to represent file information
+//! and to perform operations like listing directories with various filtering and sorting options.
+//!
+//! # Examples
+//!
+//! Basic usage for listing a directory:
+//!
+//! ```no_run
+//! use ls_rs::cli::{Args, SortOption, GroupByOption, OutputFormat};
+//! use ls_rs::file::list_directory;
+//! use std::path::PathBuf;
+//!
+//! let args = Args {
+//!     path: PathBuf::from("."),
+//!     long_view: false,
+//!     show_total: false,
+//!     recursive: false,
+//!     show_hidden: false,
+//!     group_by: GroupByOption::None,
+//!     name_pattern: None, 
+//!     sort_by: SortOption::Name,
+//!     output_format: OutputFormat::Text,
+//! };
+//!
+//! let files = list_directory(&args).unwrap();
+//! for file in files {
+//!     println!("{} ({} bytes)", file.name, file.size);
+//! }
+//! ```
 
 use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use crate::cli::Args;
 use crate::error::{FileManagerError, Result};
-use std::fs;
 use walkdir::WalkDir;
 use glob::Pattern;
 
-/// File information structure.
+/// Represents detailed information about a file or directory.
+///
+/// This structure encapsulates all relevant metadata about a file,
+/// including its path, name, size, type (directory/file/symlink),
+/// permissions, and modification time.
 #[derive(Debug, Clone)]
 pub struct FileInfo {
-    /// The file path.
+    /// The absolute file path.
     pub path: PathBuf,
-    /// The file name.
+    /// The file name (without path).
     pub name: String,
     /// The file size in bytes.
     pub size: u64,
-    /// Whether the file is a directory.
+    /// Whether the entry is a directory.
     pub is_dir: bool,
-    /// Whether the file is a symlink.
+    /// Whether the entry is a symbolic link.
     pub is_symlink: bool,
-    /// The file permissions.
+    /// The file permissions in octal format (e.g., 0o644).
     pub permissions: u32,
-    /// The file modification time.
+    /// The file's last modification time.
     pub modified: DateTime<Utc>,
 }
 
 impl FileInfo {
-    /// Create a new FileInfo from a path.
+    /// Creates a new `FileInfo` instance from a filesystem path.
+    ///
+    /// This method attempts to read the file's metadata and populate
+    /// a `FileInfo` structure with all relevant information.
+    ///
+    /// # Arguments
+    /// * `path` - A reference to the filesystem path to get information about
+    ///
+    /// # Returns
+    /// * `Result<FileInfo>` - A result containing either the file information or an error
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// * The file doesn't exist
+    /// * The metadata cannot be read due to permissions or other IO errors
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ls_rs::file::FileInfo;
+    /// use std::path::Path;
+    ///
+    /// // Get information about a file
+    /// let path = Path::new("README.md");
+    /// match FileInfo::from_path(path) {
+    ///     Ok(info) => println!("File: {} is {} bytes", info.name, info.size),
+    ///     Err(e) => eprintln!("Error: {}", e),
+    /// }
+    /// ```
     pub fn from_path(path: &Path) -> Result<Self> {
         let metadata = path.metadata().map_err(|e| {
             FileManagerError::IoError(std::io::Error::new(
@@ -57,7 +118,65 @@ impl FileInfo {
     }
 }
 
-/// List files in a directory.
+/// Lists files in a directory based on the provided arguments.
+///
+/// This function walks through a directory (recursively if specified),
+/// applies filters, and returns a list of file information.
+///
+/// # Arguments
+/// * `args` - A reference to `Args` containing configuration options
+///
+/// # Returns
+/// * `Result<Vec<FileInfo>>` - A result containing either a vector of file information or an error
+///
+/// # Filtering
+/// The function applies the following filters based on the arguments:
+/// * Hidden files (files starting with `.`) can be included or excluded
+/// * Name patterns can be specified to match only certain files
+/// * Recursive mode can traverse subdirectories
+///
+/// # Sorting
+/// Files can be sorted by:
+/// * Name
+/// * Size
+/// * Modification time
+/// * File type/extension
+///
+/// # Grouping
+/// Files can be grouped by:
+/// * Folder (directories first)
+/// * Extension
+///
+/// # Examples
+///
+/// ```no_run
+/// use ls_rs::cli::{Args, SortOption, GroupByOption, OutputFormat};
+/// use ls_rs::file::list_directory;
+/// use std::path::PathBuf;
+///
+/// // List all text files recursively
+/// let args = Args {
+///     path: PathBuf::from("."),
+///     long_view: true,
+///     show_total: false,
+///     recursive: true,
+///     show_hidden: false,
+///     group_by: GroupByOption::Extension,
+///     name_pattern: Some("*.txt".to_string()),
+///     sort_by: SortOption::Size,
+///     output_format: OutputFormat::Text,
+/// };
+///
+/// match list_directory(&args) {
+///     Ok(files) => {
+///         println!("Found {} text files:", files.len());
+///         for file in files {
+///             println!("{} ({} bytes)", file.name, file.size);
+///         }
+///     },
+///     Err(e) => eprintln!("Error: {}", e),
+/// }
+/// ```
 pub fn list_directory(args: &Args) -> Result<Vec<FileInfo>> {
     let mut files = Vec::new();
     
