@@ -1,6 +1,6 @@
 [package]
 name = "fmql"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 authors = ["Chris Mann"]
 description = "A fast and feature-rich file manager written in Rust"
@@ -11,6 +11,7 @@ keywords = ["file", "manager", "query", "language", "cli"]
 categories = ["filesystem", "command-line-utilities"]
 readme = "README.md"
 include = [
+    "examples/*.rs",
     "src/**/*.rs",
     "README.md",
     "LICENSE"
