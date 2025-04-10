@@ -1,9 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::sql::ast::{ComparisonOperator, FileAttribute, FileCondition, FileQuery, FileValue};
     use crate::sql::parser::{parse_sql, ParserError};
-    use std::path::PathBuf;
     
     #[test]
     fn test_parse_select_all() {

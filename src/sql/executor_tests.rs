@@ -1,13 +1,11 @@
 #[cfg(test)]
 mod tests {
     use crate::sql::ast::{FileAttribute, FileAttributeUpdate, FileCondition, FileQuery, FileValue, ComparisonOperator};
-    use crate::sql::executor::{execute_query, ExecutorError, FileResult};
-    use crate::sql::parser::parse_sql;
+    use crate::sql::executor::execute_query;
     use std::fs::{self, File};
     use std::io::Write;
     use std::path::PathBuf;
     use tempfile::{tempdir, TempDir};
-    use chrono::Local;
     use std::io::{Result as IoResult};
     use std::path::Path;
     
@@ -49,7 +47,7 @@ mod tests {
     #[test]
     fn test_execute_select_all() {
         let dir = setup_test_directory();
-        let dir_path = dir.path().to_string_lossy().to_string();
+        let _dir_path = dir.path().to_string_lossy().to_string();
         
         let query = FileQuery::Select {
             path: dir.path().to_path_buf(),

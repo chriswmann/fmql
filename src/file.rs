@@ -55,7 +55,7 @@ impl FileInfo {
 }
 
 /// List files in a directory.
-pub fn list_directory(args: &Args) -> Result<Vec<FileInfo>> {
+pub fn list_directory(_args: &Args) -> Result<Vec<FileInfo>> {
     let files = Vec::new();
     
     // Just return an empty vector for this stub

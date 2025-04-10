@@ -104,7 +104,7 @@ pub fn execute_query(query: &FileQuery) -> Result<Vec<FileResult>> {
 fn execute_select(
     path: &Path,
     recursive: bool,
-    attributes: &[FileAttribute],
+    _attributes: &[FileAttribute],
     condition: Option<&FileCondition>,
 ) -> Result<Vec<FileResult>> {
     let files = list_files(path, recursive)?;
