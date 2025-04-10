@@ -1,6 +1,6 @@
 [package]
 name = "fmql"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 authors = ["Chris Mann"]
 description = "A fast and feature-rich file manager written in Rust"
@@ -34,6 +34,7 @@ glob = "0.3.1"
 [dev-dependencies]
 tempfile = "3.10.0"
 pretty_assertions = "1.4.0"
+filetime = "0.2.22"
 
 [[example]]
 name = "basic_listing"
