@@ -1,4 +1,4 @@
-//! ls-rs - A fast and feature-rich file manager written in Rust.
+//! fmql - A fast and feature-rich file manager written in Rust.
 //!
 //! This crate provides a command-line tool for listing and managing files with various
 //! features like sorting, grouping, and detailed file information. It also includes a

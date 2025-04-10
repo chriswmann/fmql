@@ -7,7 +7,7 @@
 //! # Examples
 //!
 //! ```
-//! use ls_rs::error::{Result, FileManagerError};
+//! use fmql::error::{Result, FileManagerError};
 //! use std::path::PathBuf;
 //!
 //! fn example_function() -> Result<()> {
@@ -36,7 +36,7 @@ use thiserror::Error;
 /// Creating and handling different error types:
 ///
 /// ```
-/// use ls_rs::error::FileManagerError;
+/// use fmql::error::FileManagerError;
 /// use std::path::PathBuf;
 ///
 /// // Creating a path not found error
@@ -78,7 +78,7 @@ pub enum FileManagerError {
 /// # Examples
 ///
 /// ```
-/// use ls_rs::error::{Result, FileManagerError};
+/// use fmql::error::{Result, FileManagerError};
 ///
 /// fn sample_operation() -> Result<String> {
 ///     // Simulate success

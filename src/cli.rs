@@ -9,7 +9,7 @@
 //! Basic usage:
 //!
 //! ```no_run
-//! use ls_rs::cli::{Args, SortOption, GroupByOption, OutputFormat};
+//! use fmql::cli::{Args, SortOption, GroupByOption, OutputFormat};
 //! use std::path::PathBuf;
 //!
 //! // Create arguments for listing text files sorted by size
@@ -83,7 +83,7 @@ impl Args {
     /// # Examples
     ///
     /// ```no_run
-    /// use ls_rs::cli::Args;
+    /// use fmql::cli::Args;
     /// use std::path::PathBuf;
     ///
     /// let args = Args::default();
@@ -114,7 +114,7 @@ impl Default for Args {
     /// # Examples
     ///
     /// ```
-    /// use ls_rs::cli::{Args, SortOption, GroupByOption, OutputFormat};
+    /// use fmql::cli::{Args, SortOption, GroupByOption, OutputFormat};
     /// use std::path::PathBuf;
     ///
     /// let default_args = Args::default();

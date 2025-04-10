@@ -1,4 +1,4 @@
-use ls_rs::sql::{parse_sql, execute_query};
+use fmql::sql::{parse_sql, execute_query};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;

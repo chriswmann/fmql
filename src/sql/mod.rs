@@ -16,7 +16,7 @@
 //! Querying files using SQL-like syntax:
 //!
 //! ```no_run
-//! use ls_rs::sql::{parse_sql, execute_query};
+//! use fmql::sql::{parse_sql, execute_query};
 //!
 //! // Find all text files in the current directory
 //! let query = parse_sql("SELECT * FROM . WHERE name LIKE '%.txt'").unwrap();
@@ -31,7 +31,7 @@
 //! Using a more complex query with conditions:
 //!
 //! ```no_run
-//! use ls_rs::sql::{parse_sql, execute_query};
+//! use fmql::sql::{parse_sql, execute_query};
 //!
 //! // Find large image files, recursively
 //! let sql = "WITH RECURSIVE SELECT * FROM ~/Pictures WHERE \
@@ -46,7 +46,7 @@
 //! Updating file permissions:
 //!
 //! ```no_run
-//! use ls_rs::sql::{parse_sql, execute_query};
+//! use fmql::sql::{parse_sql, execute_query};
 //!
 //! // Make all shell scripts executable
 //! let sql = "UPDATE . SET permissions = '755' WHERE extension = 'sh'";

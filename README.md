@@ -1,4 +1,4 @@
-# ls-rs
+# fmql
 
 A fast and feature-rich file manager written in Rust.
 
@@ -16,13 +16,13 @@ A fast and feature-rich file manager written in Rust.
 ## Installation
 
 ```bash
-cargo install ls-rs
+cargo install fmql
 ```
 
 ## Usage
 
 ```bash
-ls-rs [OPTIONS] [PATH]
+fmql [OPTIONS] [PATH]
 ```
 
 ### Options
@@ -40,22 +40,22 @@ ls-rs [OPTIONS] [PATH]
 
 ```bash
 # List files in current directory
-ls-rs
+fmql
 
 # Show hidden files
-ls-rs -a
+fmql -a
 
 # Sort by size
-ls-rs -s size
+fmql -s size
 
 # Group by extension
-ls-rs -g extension
+fmql -g extension
 
 # Recursive listing
-ls-rs -r
+fmql -r
 
 # Custom path
-ls-rs /path/to/directory
+fmql /path/to/directory
 ```
 
 ## Grouping Options

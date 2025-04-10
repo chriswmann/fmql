@@ -9,9 +9,9 @@
 //! # Examples
 //!
 //! ```no_run
-//! use ls_rs::cli::{Args, SortOption, GroupByOption, OutputFormat};
-//! use ls_rs::file::{FileInfo, list_directory};
-//! use ls_rs::display::display_file_list;
+//! use fmql::cli::{Args, SortOption, GroupByOption, OutputFormat};
+//! use fmql::file::{FileInfo, list_directory};
+//! use fmql::display::display_file_list;
 //! use std::path::PathBuf;
 //!
 //! // Set up arguments
@@ -50,9 +50,9 @@ use crate::cli::Args;
 /// # Examples
 ///
 /// ```no_run
-/// use ls_rs::cli::{Args, OutputFormat};
-/// use ls_rs::file::FileInfo;
-/// use ls_rs::display::display_file_list;
+/// use fmql::cli::{Args, OutputFormat};
+/// use fmql::file::FileInfo;
+/// use fmql::display::display_file_list;
 /// use std::path::PathBuf;
 /// use chrono::{DateTime, Utc};
 ///

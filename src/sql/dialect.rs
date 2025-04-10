@@ -39,7 +39,7 @@ use sqlparser::dialect::{Dialect, GenericDialect};
 /// The dialect can be used to parse SQL queries containing file paths:
 ///
 /// ```no_run
-/// use ls_rs::sql::dialect::FileDialect;
+/// use fmql::sql::dialect::FileDialect;
 /// use sqlparser::parser::Parser;
 ///
 /// let sql = "SELECT * FROM ~/Documents WHERE name LIKE '%.pdf'";
@@ -59,7 +59,7 @@ impl FileDialect {
     /// # Examples
     ///
     /// ```
-    /// use ls_rs::sql::dialect::FileDialect;
+    /// use fmql::sql::dialect::FileDialect;
     ///
     /// let dialect = FileDialect::new();
     /// // Use dialect for parsing SQL queries...

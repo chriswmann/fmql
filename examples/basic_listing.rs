@@ -1,6 +1,6 @@
-use ls_rs::cli::{Args, GroupByOption, SortOption, OutputFormat};
-use ls_rs::file::list_directory;
-use ls_rs::display::display_file_list;
+use fmql::cli::{Args, GroupByOption, SortOption, OutputFormat};
+use fmql::file::list_directory;
+use fmql::display::display_file_list;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;

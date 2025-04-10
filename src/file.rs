@@ -8,8 +8,8 @@
 //! Basic usage for listing a directory:
 //!
 //! ```no_run
-//! use ls_rs::cli::{Args, SortOption, GroupByOption, OutputFormat};
-//! use ls_rs::file::list_directory;
+//! use fmql::cli::{Args, SortOption, GroupByOption, OutputFormat};
+//! use fmql::file::list_directory;
 //! use std::path::PathBuf;
 //!
 //! let args = Args {
@@ -80,7 +80,7 @@ impl FileInfo {
     /// # Examples
     ///
     /// ```no_run
-    /// use ls_rs::file::FileInfo;
+    /// use fmql::file::FileInfo;
     /// use std::path::Path;
     ///
     /// // Get information about a file
@@ -150,8 +150,8 @@ impl FileInfo {
 /// # Examples
 ///
 /// ```no_run
-/// use ls_rs::cli::{Args, SortOption, GroupByOption, OutputFormat};
-/// use ls_rs::file::list_directory;
+/// use fmql::cli::{Args, SortOption, GroupByOption, OutputFormat};
+/// use fmql::file::list_directory;
 /// use std::path::PathBuf;
 ///
 /// // List all text files recursively

@@ -18,7 +18,7 @@
 //! Building a query programmatically:
 //!
 //! ```no_run
-//! use ls_rs::sql::ast::{FileQuery, FileAttribute, FileCondition, ComparisonOperator, FileValue};
+//! use fmql::sql::ast::{FileQuery, FileAttribute, FileCondition, ComparisonOperator, FileValue};
 //! use std::path::PathBuf;
 //!
 //! // Equivalent to: SELECT * FROM ~/Documents WHERE size > 1000000
@@ -100,7 +100,7 @@ pub enum FileQuery {
 /// # Examples
 ///
 /// ```no_run
-/// use ls_rs::sql::ast::FileAttribute;
+/// use fmql::sql::ast::FileAttribute;
 ///
 /// // In a SELECT query:
 /// // SELECT name, size, modified FROM ...
@@ -148,7 +148,7 @@ pub enum FileAttribute {
 /// # Examples
 ///
 /// ```no_run
-/// use ls_rs::sql::ast::{FileAttributeUpdate, FileAttribute};
+/// use fmql::sql::ast::{FileAttributeUpdate, FileAttribute};
 ///
 /// // In an UPDATE query:
 /// // UPDATE ... SET permissions = '755'
@@ -174,7 +174,7 @@ pub struct FileAttributeUpdate {
 /// # Examples
 ///
 /// ```no_run
-/// use ls_rs::sql::ast::{FileCondition, FileAttribute, ComparisonOperator, FileValue};
+/// use fmql::sql::ast::{FileCondition, FileAttribute, ComparisonOperator, FileValue};
 ///
 /// // WHERE size > 1000000
 /// let condition = FileCondition::Compare {
@@ -252,7 +252,7 @@ pub enum FileCondition {
 /// # Examples
 ///
 /// ```no_run
-/// use ls_rs::sql::ast::ComparisonOperator;
+/// use fmql::sql::ast::ComparisonOperator;
 ///
 /// // Using operators in conditions:
 /// assert_eq!(ComparisonOperator::Eq.to_string(), "=");
@@ -295,7 +295,7 @@ impl std::fmt::Display for ComparisonOperator {
 /// # Examples
 ///
 /// ```no_run
-/// use ls_rs::sql::ast::FileValue;
+/// use fmql::sql::ast::FileValue;
 /// use chrono::Utc;
 ///
 /// // Different value types:

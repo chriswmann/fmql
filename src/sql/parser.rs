@@ -32,7 +32,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use ls_rs::sql::parse_sql;
+//! use fmql::sql::parse_sql;
 //!
 //! // Parse a SELECT query
 //! let select_query = parse_sql("SELECT * FROM . WHERE size > 1000000").unwrap();
@@ -57,7 +57,7 @@ use crate::sql::ast::{ComparisonOperator, FileAttribute, FileAttributeUpdate, Fi
 /// # Examples
 ///
 /// ```
-/// use ls_rs::sql::parser::ParserError;
+/// use fmql::sql::parser::ParserError;
 ///
 /// // Creating a parser error
 /// let error = ParserError::InvalidPath("~/invalid/path".to_string());
@@ -121,7 +121,7 @@ pub type Result<T> = std::result::Result<T, ParserError>;
 /// # Examples
 ///
 /// ```no_run
-/// use ls_rs::sql::parse_sql;
+/// use fmql::sql::parse_sql;
 ///
 /// // Parse a basic SELECT query
 /// let query = parse_sql("SELECT * FROM ~/Documents WHERE extension = 'txt'").unwrap();

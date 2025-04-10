@@ -82,7 +82,7 @@ pub struct FileResult {
 /// Example of using execute_query to process a parsed query:
 ///
 /// ```no_run
-/// use ls_rs::sql::{parse_sql, execute_query};
+/// use fmql::sql::{parse_sql, execute_query};
 ///
 /// // Parse a query
 /// let query = parse_sql("SELECT * FROM /var/log WHERE name LIKE '%.log'").unwrap();
