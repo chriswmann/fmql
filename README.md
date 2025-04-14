@@ -89,7 +89,7 @@ fmql sql "UPDATE ~/scripts SET permissions = '755' WHERE extension = 'sh'"
 - `-s, --sort <OPTION>`: Sort by: `name`, `size`, `modified`, `type` (the Sorting Hat for files)
 - `-r, --recursive`: Recursively list directories (it's directories all the way down!)
 - `-t, --total`: Show total size (how much disk space you're wasting)
-- `-g, --group-by <OPTION>`: Group by: `folder`, `extension`, `permissions`, etc. (file segregation, but the ethical kind)
+- `-g, --group-by <OPTION>`: Group by: `folder`, `extension`, `permissions`, etc. (the Beatles had groupies, `fqml` has groupees)
 - `-f, --format <FORMAT>`: Output as: `text`, `table`, `json` (dress your output fancy)
 
 ### SQL Query Stuff
