@@ -93,10 +93,10 @@ impl Args {
     /// }
     /// ```
     pub fn validate(&self) -> Result<()> {
-        if !self.path.exists() {
-            return Err(FileManagerError::PathNotFound(self.path.clone()));
-        }
-        Ok(())
+        self.path
+            .exists()
+            .then_some(())
+            .ok_or_else(|| FileManagerError::PathNotFound(self.path.clone()))
     }
 }
 
@@ -192,4 +192,3 @@ pub enum OutputFormat {
     /// Formatted table output with columns for different attributes
     Table,
 }
-
