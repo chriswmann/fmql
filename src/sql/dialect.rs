@@ -53,23 +53,6 @@ pub struct FileDialect {
     generic: GenericDialect,
 }
 
-impl FileDialect {
-    /// Creates a new FileDialect instance with default settings.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use fmql::sql::dialect::FileDialect;
-    ///
-    /// let dialect = FileDialect::new();
-    /// // Use dialect for parsing SQL queries...
-    /// ```
-    pub fn new() -> Self {
-        Self {
-            generic: GenericDialect::default(),
-        }
-    }
-}
 
 impl Dialect for FileDialect {
     /// Determines whether a character can start an identifier.

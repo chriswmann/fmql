@@ -55,14 +55,7 @@ pub enum FileManagerError {
     /// either doesn't exist or cannot be accessed due to permissions.
     #[error("Path not found: {0}")]
     PathNotFound(PathBuf),
-    
-    /// Error when a pattern (e.g., glob or regex) is syntactically invalid.
-    ///
-    /// This error occurs when a user provides a pattern that cannot be parsed
-    /// or is not valid according to the pattern syntax rules.
-    #[error("Invalid pattern: {0}")]
-    InvalidPattern(String),
-    
+
     /// Error from underlying IO operations.
     ///
     /// This wraps standard IO errors from the Rust standard library.
@@ -88,4 +81,5 @@ pub enum FileManagerError {
 ///     // Err(FileManagerError::InvalidPattern("*.[".to_string()))
 /// }
 /// ```
-pub type Result<T> = std::result::Result<T, FileManagerError>; 
+pub type Result<T> = std::result::Result<T, FileManagerError>;
+

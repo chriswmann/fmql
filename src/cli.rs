@@ -31,9 +31,9 @@
 //! }
 //! ```
 
-use std::path::PathBuf;
+use crate::error::{FileManagerError, Result};
 use clap::Parser;
-use crate::error::Result;
+use std::path::PathBuf;
 
 /// Command-line arguments for file listing operations.
 ///
@@ -44,28 +44,28 @@ use crate::error::Result;
 pub struct Args {
     /// Path to list files from (defaults to current directory if not specified).
     pub path: PathBuf,
-    
+
     /// Whether to show hidden files (those starting with a dot).
     pub show_hidden: bool,
-    
+
     /// Whether to use a detailed view format with additional file information.
     pub long_view: bool,
-    
+
     /// How to sort the file listing (by name, size, modification time, or type).
     pub sort_by: SortOption,
-    
+
     /// Whether to list files recursively through subdirectories.
     pub recursive: bool,
-    
+
     /// Whether to display summary information like total size or file count.
     pub show_total: bool,
-    
+
     /// How to group files in the listing (e.g., by folder or extension).
     pub group_by: GroupByOption,
-    
+
     /// Optional pattern to filter files by name (e.g., "*.txt").
     pub name_pattern: Option<String>,
-    
+
     /// The output format to use when displaying file listings.
     pub output_format: OutputFormat,
 }
@@ -93,6 +93,9 @@ impl Args {
     /// }
     /// ```
     pub fn validate(&self) -> Result<()> {
+        if !self.path.exists() {
+            return Err(FileManagerError::PathNotFound(self.path.clone()));
+        }
         Ok(())
     }
 }
@@ -188,4 +191,5 @@ pub enum OutputFormat {
     Text,
     /// Formatted table output with columns for different attributes
     Table,
-} 
+}
+
