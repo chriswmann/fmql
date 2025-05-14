@@ -5,25 +5,7 @@
 //! implement error types that are both user-friendly and programmatically useful.
 //!
 //! # Examples
-//!
-//! ```
-//! use fmql::error::{Result, FileManagerError};
-//! use std::path::PathBuf;
-//!
-//! fn example_function() -> Result<()> {
-//!     // Simulate an error with a non-existent path
-//!     let path = PathBuf::from("/path/does/not/exist");
-//!     Err(FileManagerError::PathNotFound(path))
-//! }
-//!
-//! // Handle the error
-//! match example_function() {
-//!     Ok(()) => println!("Success!"),
-//!     Err(e) => eprintln!("Error: {}", e),
-//! }
-//! ```
 
-use std::path::PathBuf;
 use thiserror::Error;
 
 /// Comprehensive error type for file manager operations.
@@ -36,25 +18,16 @@ use thiserror::Error;
 /// Creating and handling different error types:
 ///
 /// ```
-/// use fmql::error::FileManagerError;
-/// use std::path::PathBuf;
+/// use fmql::error::FMQLError;
 ///
-/// // Creating a path not found error
-/// let path_error = FileManagerError::PathNotFound(PathBuf::from("/missing/path"));
-/// assert!(format!("{}", path_error).contains("Path not found"));
-///
-/// // Creating a pattern error
-/// let pattern_error = FileManagerError::InvalidPattern("**/*.[".to_string());
-/// assert!(format!("{}", pattern_error).contains("Invalid pattern"));
+/// // Creating an IoError
+/// let io_error = FMQLError::IoError(std::io::Error::new(std::io::ErrorKind::NotFound, "File not found"));
+/// assert!(format!("{}", io_error).contains("IO error"));
 /// ```
 #[derive(Error, Debug)]
-pub enum FileManagerError {
+pub enum FMQLError {
     /// Error when a specified path doesn't exist or is inaccessible.
     ///
-    /// This error occurs when trying to access a file or directory that
-    /// either doesn't exist or cannot be accessed due to permissions.
-    #[error("Path not found: {0}")]
-    PathNotFound(PathBuf),
 
     /// Error from underlying IO operations.
     ///
@@ -62,24 +35,3 @@ pub enum FileManagerError {
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 }
-
-/// Result type used throughout the file manager.
-///
-/// This type is a specialized `Result` that uses `FileManagerError` as its error type,
-/// making error handling more consistent throughout the application.
-///
-/// # Examples
-///
-/// ```
-/// use fmql::error::{Result, FileManagerError};
-///
-/// fn sample_operation() -> Result<String> {
-///     // Simulate success
-///     Ok("Operation succeeded".to_string())
-///     
-///     // Or simulate failure
-///     // Err(FileManagerError::InvalidPattern("*.[".to_string()))
-/// }
-/// ```
-pub type Result<T> = std::result::Result<T, FileManagerError>;
-

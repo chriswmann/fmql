@@ -43,7 +43,7 @@ use sqlparser::dialect::{Dialect, GenericDialect};
 /// use sqlparser::parser::Parser;
 ///
 /// let sql = "SELECT * FROM ~/Documents WHERE name LIKE '%.pdf'";
-/// let dialect = FileDialect::new();
+/// let dialect = FileDialect::default();
 /// let ast = Parser::parse_sql(&dialect, sql).unwrap();
 /// // Process the parsed AST...
 /// ```
@@ -53,8 +53,8 @@ pub struct FileDialect {
     generic: GenericDialect,
 }
 
-
 impl Dialect for FileDialect {
+
     /// Determines whether a character can start an identifier.
     ///
     /// This implementation extends the generic SQL dialect to allow

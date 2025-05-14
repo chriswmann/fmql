@@ -45,27 +45,6 @@ cargo build --release
 
 ## 📚 Usage: How to Pretend Your File System is a SQL Server DB from 1989?
 
-### Basic File Listing (which will probably be deleted because `ls`, `exa` and `eza` are infinitely better)
-
-```bash
-# List files in current directory (boring, but effective)
-fmql ls
-
-# Show hidden files (where the real secrets hide)
-fmql ls -a
-
-# Detailed listing (for people who need to know EVERYTHING)
-fmql ls -l
-
-# Sort by size (big files first, because size matters)
-fmql ls -s size
-
-# Recursively list directories (for brave souls)
-fmql ls -r
-```
-
-### SQL Mode (Because Why Not?)
-
 ```bash
 # Find all text files in your Documents
 fmql sql "SELECT * FROM ~/Documents WHERE extension = 'txt'"
@@ -79,18 +58,6 @@ fmql sql "SELECT * FROM ~/scripts WHERE permissions LIKE '%x%'"
 # Update file permissions (because chmod is so 1970s)
 fmql sql "UPDATE ~/scripts SET permissions = '755' WHERE extension = 'sh'"
 ```
-
-## 🎮 Command Options
-
-### LS Mode Options
-
-- `-a, --all`: Show hidden files (the ones wearing invisibility cloaks)
-- `-l, --long`: Use detailed view (for file stalkers)
-- `-s, --sort <OPTION>`: Sort by: `name`, `size`, `modified`, `type` (the Sorting Hat for files)
-- `-r, --recursive`: Recursively list directories (it's directories all the way down!)
-- `-t, --total`: Show total size (how much disk space you're wasting)
-- `-g, --group-by <OPTION>`: Group by: `folder`, `extension`, `permissions`, etc. (file segregation, but the ethical kind)
-- `-f, --format <FORMAT>`: Output as: `text`, `table`, `json` (dress your output fancy)
 
 ### SQL Query Stuff
 
