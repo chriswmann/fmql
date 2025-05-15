@@ -302,12 +302,21 @@ fn extract_condition_from_sql(sql: &str) -> Result<Option<FileCondition>> {
     }
 
     // For LIKE condition
-    if sql.to_uppercase().contains("LIKE") && sql.contains("name") && sql.contains("%config%") {
-        return Ok(Some(FileCondition::Like {
-            attribute: FileAttribute::Name,
-            pattern: "%config%".to_string(),
-            case_sensitive: false,
-        }));
+    if sql.to_uppercase().contains("LIKE") && sql.contains("name") {
+        // Extract the pattern between quotes
+        if let Some(pattern) = sql
+            .split("LIKE")
+            .nth(1)
+            .and_then(|s| s.trim().split_once("'"))
+            .and_then(|(_, rest)| rest.split_once("'"))
+            .map(|(pattern, _)| pattern.to_string())
+        {
+            return Ok(Some(FileCondition::Like {
+                attribute: FileAttribute::Name,
+                pattern,
+                case_sensitive: false,
+            }));
+        }
     }
 
     // For basic comparisons

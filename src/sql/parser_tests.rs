@@ -140,6 +140,34 @@ fn test_parse_select_with_like() {
 }
 
 #[test]
+fn test_parse_select_with_like_pattern_variations() {
+    let test_cases = vec![
+        ("SELECT * FROM ~/Downloads WHERE name LIKE '%meme'", "%meme"),
+        ("SELECT * FROM ~/Documents WHERE name LIKE 'meme%'", "meme%"),
+        ("SELECT * FROM ~/Pictures WHERE name LIKE '%meme%'", "%meme%"),
+        ("SELECT * FROM ~/Videos WHERE name LIKE 'm_me'", "m_me"),
+        ("SELECT * FROM ~/Music WHERE name LIKE '_e%e_'", "_e%e_"),
+    ];
+
+    for (sql, expected_pattern) in test_cases {
+        let query = parse_sql(sql).unwrap();
+        match query {
+            FileQuery::Select { condition, .. } => {
+                match condition {
+                    Some(FileCondition::Like { attribute, pattern, case_sensitive }) => {
+                        assert!(matches!(attribute, FileAttribute::Name));
+                        assert_eq!(pattern, expected_pattern);
+                        assert!(!case_sensitive, "Expected case_sensitive to be false for: {}", sql);
+                    },
+                    _ => panic!("Expected LIKE condition for SQL: {}", sql),
+                }
+            },
+            _ => panic!("Expected SELECT query for SQL: {}", sql),
+        }
+    }
+}
+
+#[test]
 fn test_parse_select_with_regexp() {
     let sql = "SELECT * FROM ~/logs WHERE REGEXP(name, '^server_[0-9]+\\.log$')";
     let query = parse_sql(sql).unwrap();
