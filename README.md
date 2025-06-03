@@ -13,6 +13,8 @@ It puts the "Q" into "FML".
 
 Yes it was mostly vibe-coded, I've been meaning to write this for months and this way I finally got round to it.
 
+Edit: just discovered [fselect](https://fselect.rocks/) - if you want SQL file finding, use that!
+
 ⚠️ **WARNING**: This code is buggy as hell. Use at your own risk. Don't blame me when it deletes your homework or accidentally formats your hard drive. I'm still working on it, and by "working on it," I mean "not working on it very much at all because I don't have time right now".
 
 
