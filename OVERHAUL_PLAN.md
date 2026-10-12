@@ -33,7 +33,7 @@ features and repository-wide lint/formatting cleanup remain separate work.
 | H1 | `list_files` yields the walked root directory itself as a result. | `executor.rs:191` |
 | H2 | `execute_update` always walks recursively (`list_files(path, true)`); `FileQuery::Update` has no `recursive` field, so the caller cannot scope it. A bad `WHERE` recursively chmods a tree. | `executor.rs:136` |
 | H3 | `BETWEEN`/comparisons on `modified` are broken. `modified` resolves to `FileValue::DateTime` but date literals stay `FileValue::String`; `compare_values` falls through to a `TypeError`. Date strings are never parsed. | `parser.rs:297`, `executor.rs:313` |
-| H4 | `evaluate_condition` errors are discarded by `.filter(|f| evaluate_condition(...).unwrap_or(false))`. Type errors and bad regexes vanish instead of surfacing. | `executor.rs:121,140` |
+| H4 | `evaluate_condition` errors are discarded because the filter uses `unwrap_or(false)`. Type errors and bad regexes vanish instead of surfacing. | `executor.rs:121,140` |
 | H5 | Extension dot inconsistency: `path.extension()` gives `rs`; the stub parser emits `.txt`. Equality silently never matches across the two conventions. | `executor.rs:228`, `parser.rs:327` |
 
 ### Severity: medium

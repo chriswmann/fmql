@@ -14,8 +14,9 @@ cargo run -- sql "SELECT * FROM . WHERE extension = 'rs'"   # run the CLI
 cargo run --example sql_queries    # run an example end to end
 ```
 
-CI (`.github/workflows/rust.yml`) only runs `cargo build`, `cargo test`, `cargo clippy`
-on `main`. Clippy warnings do not fail CI, so a green tick does not mean lint-clean.
+CI (`.github/workflows/rust.yml`) only runs `cargo build`, `cargo test`, `cargo clippy`,
+on pushes to `main` and on pull requests targeting `main`. Clippy warnings do not fail
+CI, so a green tick does not mean lint-clean.
 
 ## Architecture
 
