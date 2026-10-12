@@ -148,6 +148,12 @@ fn execute_update(
     let mut updated_files = Vec::new();
 
     for file in filtered_files {
+        // Setting permissions acts on a link's target, which may lie outside
+        // the queried directory, so links are never updated.
+        if fs::symlink_metadata(&file.path)?.file_type().is_symlink() {
+            continue;
+        }
+
         let mut file_updated = false;
 
         for update in updates {
@@ -224,7 +230,9 @@ fn list_files(dir_path: &Path, recursive: bool) -> Result<Vec<FileResult>> {
 
 /// Creates a FileResult from a path.
 fn create_file_result(path: &Path) -> Result<FileResult> {
-    let metadata = fs::metadata(path)?;
+    // Describe a link by its target, falling back to the link itself when the
+    // target is missing so one broken link cannot fail the whole query.
+    let metadata = fs::metadata(path).or_else(|_| fs::symlink_metadata(path))?;
 
     let name = path
         .file_name()

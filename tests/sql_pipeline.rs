@@ -354,3 +354,44 @@ fn keyword_named_directories_need_no_quoting() {
         assert_eq!(files.as_array().unwrap().len(), 1, "{name}");
     }
 }
+
+#[test]
+fn updates_never_change_files_through_symbolic_links() {
+    use std::os::unix::fs::symlink;
+    for prefix in ["", "WITH RECURSIVE "] {
+        let dir = fixture();
+        let outside = fixture();
+        symlink(outside.path().join("alpha.rs"), dir.path().join("link.rs")).unwrap();
+        symlink(outside.path().join("nested"), dir.path().join("linked_dir")).unwrap();
+        symlink(outside.path().join("missing"), dir.path().join("broken.rs")).unwrap();
+        let outside_dir_mode = mode(&outside.path().join("nested"));
+
+        let sql = format!(
+            "{prefix}UPDATE {} SET permissions = '600' WHERE is_directory = false OR name = 'linked_dir'",
+            dir.path().display()
+        );
+        let updated: Vec<_> = execute_query(&parse_sql(&sql).unwrap())
+            .unwrap()
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert!(updated.contains(&"alpha.rs".to_owned()), "{sql}");
+        for link in ["link.rs", "linked_dir", "broken.rs"] {
+            assert!(!updated.contains(&link.to_owned()), "updated {link}");
+        }
+        assert_eq!(mode(&dir.path().join("alpha.rs")), 0o600);
+        assert_eq!(mode(&outside.path().join("alpha.rs")), 0o640);
+        assert_eq!(mode(&outside.path().join("nested")), outside_dir_mode);
+        assert_eq!(mode(&outside.path().join("nested/child.rs")), 0o640);
+    }
+}
+
+#[test]
+fn broken_symbolic_links_are_listed_without_failing_the_query() {
+    let dir = fixture();
+    std::os::unix::fs::symlink(dir.path().join("missing"), dir.path().join("broken.rs")).unwrap();
+    assert_eq!(
+        names(dir.path(), "", "extension = 'rs'"),
+        ["alpha.rs", "broken.rs"]
+    );
+}

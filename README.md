@@ -102,6 +102,10 @@ Malformed predicates, incompatible literal types and invalid regexes are also
 rejected, including on empty directories. Filesystem failures during an accepted
 update can still leave earlier files changed; updates are not transactional.
 
+Symbolic links are listed but never followed into, and their attributes describe
+the target (or the link itself when the target is missing). Updates skip
+symbolic links, so `UPDATE` cannot change a file outside the directory it names.
+
 ## Examples
 
 ```bash

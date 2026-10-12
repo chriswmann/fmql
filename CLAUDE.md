@@ -58,6 +58,8 @@ temporary directories, including rejected updates that must not change files.
 - The public executor still discards evaluation errors in its filter. Callers
   constructing `FileQuery` directly bypass parser validation. Accepted updates
   can partially apply if a later filesystem operation fails; they are not atomic.
+- Updates skip symbolic links so they cannot change files outside the queried
+  directory. Listing reads metadata through links, falling back to the link itself.
 - `FMQLError` remains unused by the binary. Lint and formatting debt remains
   outside the parser work. `OVERHAUL_PLAN.md` retains the original review as history.
 
