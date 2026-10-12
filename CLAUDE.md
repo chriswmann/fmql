@@ -39,31 +39,31 @@ sql string ──parse_sql()──▶ FileQuery (AST) ──execute_query()─�
 - `src/main.rs` — `clap` CLI with one subcommand, `sql`.
 
 Unit tests live in sibling `*_tests.rs` files pulled in via `#[cfg(test)] #[path = "..."] mod tests;`.
+`tests/sql_pipeline.rs` exercises the parser, executor and CLI together against
+temporary directories, including rejected updates that must not change files.
 
 ## Critical context before changing anything
 
-The crate does not work as the README describes. Treat the README as a wishlist.
-
-- **`parse_sql` is a string-matching stub, not a parser.** It pattern-matches against
-  the exact strings in `parser_tests.rs` (hardcoded regexes, dates, extensions). It
-  does NOT use `sqlparser` or `FileDialect` at all. Any query outside the test fixtures
-  silently returns the wrong result (usually "no condition" → all files). The passing
-  tests are the mock validating its own hardcoded answers.
-- `FileDialect` and the entire `sqlparser` dependency are dead code (build emits a
-  `never constructed` warning). `FMQLError` is also dead.
-- The AST has no representation for `ORDER BY` or `GROUP BY`; the README's "sorting"
-  and "grouping" features do not exist. `display.rs` and `file.rs` were deleted (still
-  visible in `target/package/fmql-0.2.x/`); table output and the `ls` mode are gone.
-- Known executor bugs: `list_files` includes the root directory itself in results;
-  `execute_update` always recurses regardless of intent; `BETWEEN` on `modified` fails
-  because date `FileValue::String` literals are never parsed into `FileValue::DateTime`;
-  `evaluate_condition` errors are swallowed by `.unwrap_or(false)` in the filter.
-- Extension values are inconsistent: `path.extension()` yields no leading dot (`rs`),
-  but the stub parser emits values with a dot (`.txt`). Check which side you are on.
+- `parse_sql` uses sqlparser tokens and expression parsing with `FileDialect`.
+  Its restricted statement grammar accepts `SELECT *` and permission updates,
+  and requires complete input consumption. Unsupported syntax must return an
+  error, never an absent or weakened condition.
+- Both statements default to non-recursive traversal. `WITH RECURSIVE` enables
+  recursion explicitly. The executor excludes the root directory from results.
+- The parser expands `~` and normalises a leading dot in extension comparison
+  literals. It validates attributes, literal types, dates, regexes and octal
+  permissions before execution, even for empty directories or unused branches.
+- `ORDER BY`, `GROUP BY`, projection, ownership/rename updates and unimplemented
+  metadata are rejected. The README documents the supported subset.
+- The public executor still discards evaluation errors in its filter. Callers
+  constructing `FileQuery` directly bypass parser validation. Accepted updates
+  can partially apply if a later filesystem operation fails; they are not atomic.
+- `FMQLError` remains unused by the binary. Lint and formatting debt remains
+  outside the parser work. `OVERHAUL_PLAN.md` retains the original review as history.
 
 ## Conventions
 
 - Rust 2024 edition. British English in prose, no em dashes.
 - Per-module error enums via `thiserror`, with a module-local `Result<T>` alias.
 - `examples/group_by_updates.rs` uses `CONCAT`/`MONTH`/`DAY` SQL functions that no
-  layer supports; it parses to a no-op. Do not treat it as a working reference.
+  layer supports; parsing now returns an error. Do not treat it as a working reference.

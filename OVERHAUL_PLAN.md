@@ -3,6 +3,19 @@
 A code review and staged plan to turn FMQL from a test-passing mock into a
 working tool. Written 2026-05-22 against commit `f5037c3` (v0.3.0).
 
+## Progress as of 2026-10-12
+
+The review below is historical. Root-directory exclusion, explicit executor
+recursion, date comparisons and literal LIKE matching now have regression tests.
+The parser stub has been replaced with sqlparser tokenisation and expression
+parsing behind a restricted statement grammar. It validates the entire query,
+rejects unsupported constructs, and supports quoted paths and explicit recursion
+for both SELECT and UPDATE. This avoids accepting full SQL clauses that the
+executor cannot honour. Parser/executor/CLI integration tests cover exact matches
+and rejected updates leaving files unchanged. The README documents the supported
+subset. Executor errors for hand-built ASTs, transactional updates, broader
+features and repository-wide lint/formatting cleanup remain separate work.
+
 ## 1. Review summary
 
 ### Severity: critical

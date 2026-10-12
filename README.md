@@ -28,10 +28,8 @@ SELECT * FROM ~/Documents WHERE size > 1000000 AND modified > '2025-01-01'
 - **SQL-like Querying**: `SELECT * FROM ~/memes WHERE extension = 'jpg' AND name LIKE '%cat%'` because who needs GUI file search when you can type a novel?
 - **Slightly Fast**: Traverses your filesystem faster than you can say "where did I put that file again?" ten times.
 - **Detailed File Info**: Size, permissions, timestamps, and more. Like `ls -la` but dysfunctional and with a bad attitude.
-- **Sophisticated Sorting**: By name, size, modified date, or type.
-- **Grouping Options**: Group by extension, permissions, or name patterns.
 - **Recursive Listing**: Who needs `fd` when you can use fmql? (Everybody, actually.)
-- **Multiple Output Formats**: Text, table, or JSON. Text and table are basically the same so "two output formats" is more accurate.
+- **Output Formats**: Text or JSON (`--format json`).
 
 ## 🔧 Installation (No Magic Required)
 
@@ -55,7 +53,7 @@ fmql sql "SELECT * FROM ~/Documents WHERE extension = 'txt'"
 fmql sql "SELECT * FROM ~/Pictures WHERE (extension = 'jpg' OR extension = 'png') AND size > 1000000 AND modified > '2023-06-01'"
 
 # Find executable scripts (your personal army of automation)
-fmql sql "SELECT * FROM ~/scripts WHERE permissions LIKE '%x%'"
+fmql sql "SELECT * FROM ~/scripts WHERE is_executable = true"
 
 # Update file permissions (because chmod is so 1970s)
 fmql sql "UPDATE ~/scripts SET permissions = '755' WHERE extension = 'sh'"
@@ -65,10 +63,44 @@ fmql sql "UPDATE ~/scripts SET permissions = '755' WHERE extension = 'sh'"
 
 FMQL understands these SQL-ish commands:
 
-- `SELECT`: Find files matching specific conditions
-- `UPDATE`: Modify file attributes (permissions, etc.)
-- `WHERE`: Filter with conditions (`=`, `>`, `<`, `LIKE`, `REGEXP`)
-- `WITH RECURSIVE`: Recursively search directories (prepare for deep dives)
+- `SELECT * FROM path [WHERE condition]`: Find matching files and directories.
+- `UPDATE path SET permissions = '755' [WHERE condition]`: Change permissions.
+- `WHERE`: Comparisons (`=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`), `AND`, `OR`,
+  `NOT`, parentheses, `[NOT] BETWEEN`, `[NOT] LIKE`, `ILIKE`, and
+  `REGEXP(attribute, 'pattern')` or `attribute [NOT] REGEXP 'pattern'`.
+- `WITH RECURSIVE`: Prefix either statement to include descendants. Without it,
+  both queries and updates visit only immediate children. The root directory is
+  excluded. An update without `WHERE` changes every entry in that scope.
+
+Keywords and attribute names are case-insensitive. `AND` binds more tightly than
+`OR`; use parentheses to make grouping explicit. `LIKE` and `ILIKE` are both
+case-insensitive, while string comparisons and regular expressions are
+case-sensitive. LIKE uses `%` and `_` wildcards and has no `ESCAPE` support.
+
+Supported filter attributes are `name`, `path`, `extension` (strings), `size`
+(bytes), `permissions` (octal digits such as `644`, with `=` or `!=` only),
+`modified` (a quoted `YYYY-MM-DD` or RFC 3339 timestamp), `is_directory` and
+`is_executable` (booleans, with equality or inequality). `is_executable` tests the
+owner's execute bit. Bare dates mean midnight UTC. Extension comparisons accept
+either `'rs'` or `'.rs'`. Permission filters and updates both read octal digits
+from `0000` to `7777`, quoted or bare, as `chmod` does. A filter compares the
+permission bits only, so `permissions = 644` matches a `rw-r--r--` file.
+
+Paths may be absolute, relative, or start with `~` / `~/` for the home directory.
+Double-quote paths with spaces or SQL punctuation, or a relative path that
+starts with `WHERE` or `SET`:
+`SELECT * FROM "/tmp/my files" WHERE name = 'it''s.txt'`. Double an embedded
+double quote in a quoted path. String literals use single quotes and double an
+embedded apostrophe. SQL comments and one optional trailing semicolon are allowed.
+
+The parser uses `sqlparser` for tokens and expressions and requires the whole
+query to be understood before execution. Unsupported queries return an error:
+this includes projections other than `*`, sorting, grouping, limits, joins,
+subqueries, multiple statements, ownership/rename updates and attributes whose
+metadata is not implemented (`owner`, `created`, `accessed`, `is_symlink`).
+Malformed predicates, incompatible literal types and invalid regexes are also
+rejected, including on empty directories. Filesystem failures during an accepted
+update can still leave earlier files changed; updates are not transactional.
 
 ## Examples
 
@@ -76,14 +108,14 @@ FMQL understands these SQL-ish commands:
 # Find all your unfinished projects
 fmql sql "SELECT * FROM ~/projects WHERE modified < '2023-01-01' AND NOT name LIKE '%completed%'"
 
-# List all memes sorted by size
-fmql sql "SELECT * FROM ~/Downloads WHERE name LIKE '%meme%' ORDER BY size DESC"
+# List large memes
+fmql sql "SELECT * FROM ~/Downloads WHERE name LIKE '%meme%' AND size > 1000000"
 
-# Find screenshots from 3am
-fmql sql "SELECT * FROM ~/Pictures WHERE name LIKE '%screenshot%' AND modified LIKE '%03:%'"
+# Find screenshots in a time range
+fmql sql "SELECT * FROM ~/Pictures WHERE name LIKE '%screenshot%' AND modified BETWEEN '2026-10-01T03:00:00Z' AND '2026-10-01T03:59:59Z'"
 
 # Look for suspicious executables
-fmql sql "SELECT * FROM ~/Downloads WHERE is_executable = true AND NOT permission = '755'"
+fmql sql "SELECT * FROM ~/Downloads WHERE is_executable = true AND extension != 'sh'"
 ```
 
 ## 🤝 Contributing

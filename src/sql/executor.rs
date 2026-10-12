@@ -317,7 +317,8 @@ fn evaluate_condition(file: &FileResult, condition: &FileCondition) -> Result<bo
                         .replace("\x00PERCENT\x00", ".*")
                         .replace("\x00UNDER\x00", ".");
 
-                    let regex = Regex::new(&format!("^{}$", regex_pattern))?;
+                    // `(?s)` lets wildcards match a newline within a file name.
+                    let regex = Regex::new(&format!("(?s)^{}$", regex_pattern))?;
                     Ok(regex.is_match(&file_str))
                 }
                 _ => Err(ExecutorError::TypeError(format!(
@@ -365,7 +366,8 @@ fn get_attribute_value(file: &FileResult, attribute: &FileAttribute) -> Result<F
             file.extension.clone().unwrap_or_default(),
         )),
         FileAttribute::Modified => Ok(FileValue::DateTime(file.modified)),
-        FileAttribute::Permissions => Ok(FileValue::Number(file.permissions as f64)),
+        // Compare permission bits only; the raw mode also carries file-type bits.
+        FileAttribute::Permissions => Ok(FileValue::Number((file.permissions & 0o7777) as f64)),
         FileAttribute::IsDirectory => Ok(FileValue::Boolean(file.is_directory)),
         FileAttribute::Owner => {
             if let Some(owner) = &file.owner {
