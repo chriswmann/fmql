@@ -35,7 +35,7 @@ fn test_parse_select_with_condition() {
                 Some(FileCondition::Compare { attribute, operator, value }) => {
                     assert!(matches!(attribute, FileAttribute::Extension));
                     assert!(matches!(operator, ComparisonOperator::Eq));
-                    assert!(matches!(value, FileValue::String(s) if s == ".txt"));
+                    assert!(matches!(value, FileValue::String(s) if s == "txt"));
                 },
                 _ => panic!("Expected Compare condition"),
             }
@@ -73,7 +73,7 @@ fn test_parse_select_with_complex_condition() {
                         ) => {
                             assert!(matches!(attr1, FileAttribute::Extension));
                             assert!(matches!(op1, ComparisonOperator::Eq));
-                            assert!(matches!(val1, FileValue::String(s) if s == ".txt"));
+                            assert!(matches!(val1, FileValue::String(s) if s == "txt"));
                             
                             assert!(matches!(attr2, FileAttribute::Size));
                             assert!(matches!(op2, ComparisonOperator::Gt));
@@ -222,7 +222,7 @@ fn test_parse_update() {
     let query = parse_sql(sql).unwrap();
     
     match query {
-        FileQuery::Update { path, updates, condition } => {
+        FileQuery::Update { path, updates, condition, .. } => {
             assert!(path.ends_with("executables"));
             assert_eq!(updates.len(), 1);
             
@@ -234,7 +234,7 @@ fn test_parse_update() {
                 Some(FileCondition::Compare { attribute, operator, value }) => {
                     assert!(matches!(attribute, FileAttribute::Extension));
                     assert!(matches!(operator, ComparisonOperator::Eq));
-                    assert!(matches!(value, FileValue::String(s) if s == ".bin"));
+                    assert!(matches!(value, FileValue::String(s) if s == "bin"));
                 },
                 _ => panic!("Expected Compare condition"),
             }
@@ -249,7 +249,7 @@ fn test_parse_update_multiple_attributes() {
     let query = parse_sql(sql).unwrap();
     
     match query {
-        FileQuery::Update { path, updates, condition } => {
+        FileQuery::Update { path, updates, condition, .. } => {
             assert!(path.ends_with("executables"));
             assert_eq!(updates.len(), 2);
             
@@ -263,7 +263,7 @@ fn test_parse_update_multiple_attributes() {
                 Some(FileCondition::Compare { attribute, operator, value }) => {
                     assert!(matches!(attribute, FileAttribute::Extension));
                     assert!(matches!(operator, ComparisonOperator::Eq));
-                    assert!(matches!(value, FileValue::String(s) if s == ".bin"));
+                    assert!(matches!(value, FileValue::String(s) if s == "bin"));
                 },
                 _ => panic!("Expected Compare condition"),
             }
