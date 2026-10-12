@@ -1,418 +1,464 @@
-//! Parser for SQL-like file management commands.
+//! Parsing and validation for the supported file-query SQL subset.
 //!
-//! This module provides functionality to parse SQL-like statements into
-//! file management operations. It transforms text-based SQL queries into
-//! structured `FileQuery` objects that can be executed by the executor.
+//! Supports `SELECT * FROM path [WHERE condition]` and
+//! `UPDATE path SET permissions = '640' [WHERE condition]`.
+//! Prefix either with `WITH RECURSIVE` to include descendants. Double-quote
+//! paths containing spaces or SQL punctuation. Single-quote string literals,
+//! doubling quotes for embedded apostrophes.
 //!
-//! # Supported SQL Syntax
-//!
-//! The parser supports a subset of SQL syntax specifically adapted for file operations:
-//!
-//! ## SELECT Queries
-//! ```sql
-//! -- Basic select
-//! SELECT * FROM /path/to/directory WHERE extension = 'txt'
-//!
-//! -- Recursive select (includes subdirectories)
-//! WITH RECURSIVE SELECT * FROM ~/Documents WHERE size > 1000000
-//! ```
-//!
-//! ## UPDATE Queries
-//! ```sql
-//! -- Update permissions
-//! UPDATE /path/to/scripts SET permissions = '755' WHERE extension = 'sh'
-//! ```
-//!
-//! ## Condition Types
-//! - Comparisons: `=`, `!=`, `<`, `<=`, `>`, `>=`
-//! - Pattern matching: `LIKE`, `REGEXP`
-//! - Range checking: `BETWEEN`
-//! - Logical operations: `AND`, `OR`, `NOT`
-//!
-//! # Examples
-//!
-//! ```no_run
-//! use fmql::sql::parse_sql;
-//!
-//! // Parse a SELECT query
-//! let select_query = parse_sql("SELECT * FROM . WHERE size > 1000000").unwrap();
-//!
-//! // Parse an UPDATE query
-//! let update_query = parse_sql("UPDATE ~/scripts SET permissions = '755' WHERE extension = 'sh'").unwrap();
-//!
-//! // Parse a complex query with pattern matching
-//! let pattern_query = parse_sql("SELECT * FROM ~/logs WHERE name LIKE '%.log' AND size > 1000").unwrap();
-//! ```
+//! The statement envelope deliberately accepts only operations the executor
+//! implements. sqlparser handles tokenisation and expressions, including
+//! precedence, parentheses, comments and escaping. Every token must be consumed.
 
 use std::path::PathBuf;
+
+use chrono::{DateTime, Utc};
+use sqlparser::ast::{
+    BinaryOperator, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments, UnaryOperator,
+    Value,
+};
+use sqlparser::keywords::Keyword;
+use sqlparser::parser::Parser;
+use sqlparser::tokenizer::Token;
 use thiserror::Error;
 
 use crate::sql::ast::{
     ComparisonOperator, FileAttribute, FileAttributeUpdate, FileCondition, FileQuery, FileValue,
 };
+use crate::sql::dialect::FileDialect;
 
-/// Errors that can occur during SQL parsing.
-///
-/// This enum represents all the potential errors that might arise during
-/// the parsing of SQL-like statements into file queries.
-///
-/// # Examples
-///
-/// ```
-/// use fmql::sql::parser::ParserError;
-///
-/// // Creating a parser error
-/// let error = ParserError::InvalidPath("~/invalid/path".to_string());
-/// assert!(format!("{}", error).contains("Invalid file path"));
-/// ```
+/// Errors produced before a file query can be executed.
 #[derive(Error, Debug)]
 pub enum ParserError {
-    /// Error from the underlying SQL parser library.
     #[error("SQL parser error: {0}")]
     Sql(#[from] sqlparser::parser::ParserError),
-
-    /// Error when the SQL statement type is not supported (e.g., not SELECT/UPDATE).
     #[error("Unsupported SQL statement: {0}")]
     UnsupportedStatement(String),
-
-    /// Error when a path in the query is invalid or cannot be resolved.
+    #[error("Unsupported SQL expression: {0}")]
+    UnsupportedExpression(String),
+    #[error("Unsupported file attribute: {0}")]
+    UnsupportedAttribute(String),
     #[error("Invalid file path: {0}")]
     InvalidPath(String),
-
     #[error("Missing required clause: {0}")]
     MissingClause(String),
+    #[error("Invalid value for {attribute:?}: {value}")]
+    InvalidValue {
+        attribute: FileAttribute,
+        value: String,
+    },
+    #[error("Invalid regular expression: {0}")]
+    InvalidRegex(#[from] regex::Error),
 }
 
-/// Result type for parser operations.
-///
-/// This is a specialized Result type that uses `ParserError` as its error type.
 pub type Result<T> = std::result::Result<T, ParserError>;
 
-/// Parses a SQL-like statement into a structured FileQuery object.
-///
-/// This function is the main entry point for SQL parsing. It takes a SQL string
-/// and transforms it into a `FileQuery` that can be executed by the executor.
-///
-/// # Arguments
-///
-/// * `sql` - The SQL-like statement to parse as a string
-///
-/// # Returns
-///
-/// A `Result` containing either:
-/// - A parsed `FileQuery` object representing the query
-/// - A `ParserError` if parsing fails
-///
-/// # Examples
-///
-/// ```no_run
-/// use fmql::sql::parse_sql;
-///
-/// // Parse a basic SELECT query
-/// let query = parse_sql("SELECT * FROM ~/Documents WHERE extension = 'txt'").unwrap();
-///
-/// // Parse a recursive query
-/// let recursive = parse_sql("WITH RECURSIVE SELECT * FROM . WHERE size > 1000000").unwrap();
-///
-/// // Parse an UPDATE query
-/// let update = parse_sql("UPDATE ~/scripts SET permissions = '755' WHERE extension = 'sh'").unwrap();
-/// ```
+/// Parse one complete query, rejecting unsupported syntax rather than weakening
+/// its predicate. Validation finishes before filesystem traversal or mutation.
 ///
 /// # Errors
-///
-/// This function will return an error if:
-/// - The SQL syntax is invalid
-/// - The statement type is not supported (only SELECT and UPDATE are supported)
-/// - Required clauses are missing (e.g., FROM in a SELECT query)
-/// - Path resolution fails (e.g., home directory cannot be determined)
+/// Returns an error for malformed or unsupported SQL, unavailable attributes,
+/// incompatible literals, invalid patterns, or paths that cannot be expanded.
 pub fn parse_sql(sql: &str) -> Result<FileQuery> {
-    // For the purpose of the test, we'll simplify and use a mock implementation
-    // that returns predefined query objects based on simple string matching
-
-    if sql.to_uppercase().starts_with("SELECT") {
-        // Basic SELECT query
-        let path = extract_path_from_sql(sql)?;
-        let recursive = sql.to_uppercase().contains("RECURSIVE");
-        let condition = extract_condition_from_sql(sql)?;
-
-        return Ok(FileQuery::Select {
+    let dialect = FileDialect::default();
+    let mut parser = Parser::new(&dialect).try_with_sql(sql)?;
+    let recursive = parser.parse_keywords(&[Keyword::WITH, Keyword::RECURSIVE]);
+    let select = parser.parse_keyword(Keyword::SELECT);
+    if select {
+        // Projection is not implemented by the executor; do not silently ignore it.
+        parser.expect_token(&Token::Mul)?;
+        parser.expect_keyword(Keyword::FROM)?;
+    } else if !parser.parse_keyword(Keyword::UPDATE) {
+        return Err(ParserError::UnsupportedStatement(sql.to_owned()));
+    }
+    let path = parse_path(&mut parser)?;
+    let updates = if select {
+        Vec::new()
+    } else {
+        parse_updates(&mut parser)?
+    };
+    let condition = if parser.parse_keyword(Keyword::WHERE) {
+        Some(convert_condition(&parser.parse_expr()?)?)
+    } else {
+        None
+    };
+    let _ = parser.consume_token(&Token::SemiColon);
+    parser.expect_token(&Token::EOF)?;
+    if select {
+        Ok(FileQuery::Select {
             path,
             recursive,
             attributes: vec![FileAttribute::All],
             condition,
-        });
-    } else if sql.to_uppercase().starts_with("WITH RECURSIVE") {
-        // Recursive SELECT query
-        let path = extract_path_from_sql(sql)?;
-        let condition = extract_condition_from_sql(sql)?;
-
-        return Ok(FileQuery::Select {
+        })
+    } else {
+        Ok(FileQuery::Update {
             path,
-            recursive: true,
-            attributes: vec![FileAttribute::All],
-            condition,
-        });
-    } else if sql.to_uppercase().starts_with("UPDATE") {
-        // Basic UPDATE query
-        let path = extract_path_from_sql(sql)?;
-        let updates = extract_updates_from_sql(sql)?;
-        let condition = extract_condition_from_sql(sql)?;
-
-        return Ok(FileQuery::Update {
-            path,
+            recursive,
             updates,
             condition,
+        })
+    }
+}
+
+fn parse_path(parser: &mut Parser<'_>) -> Result<PathBuf> {
+    let first = parser.next_token();
+    if first.token == Token::EOF {
+        return Err(ParserError::MissingClause("directory path".to_owned()));
+    }
+    let mut end = first.span.end;
+    let quoted = matches!(&first.token, Token::Word(word) if word.quote_style.is_some());
+    let mut path = path_token(&first.token)
+        .ok_or_else(|| ParserError::InvalidPath(first.token.to_string()))?;
+    // sqlparser tokenises leading '/' and '.' as operators even for FileDialect.
+    // Join only adjacent path tokens; never swallow whitespace or SQL clauses.
+    while !quoted && parser.peek_token().span.start == end {
+        let next = parser.peek_token();
+        if matches!(&next.token, Token::Word(word) if word.quote_style.is_some()) {
+            break;
+        }
+        let part = match &next.token {
+            Token::Word(word) => Some(word.value.clone()),
+            token => path_token(token),
+        };
+        let Some(part) = part else {
+            break;
+        };
+        path.push_str(&part);
+        end = parser.next_token().span.end;
+    }
+    if path.is_empty() || path.contains('\0') {
+        return Err(ParserError::InvalidPath(path));
+    }
+    if path == "~" || path.starts_with("~/") {
+        let home = dirs::home_dir().ok_or_else(|| ParserError::InvalidPath(path.clone()))?;
+        return Ok(if path == "~" {
+            home
+        } else {
+            home.join(path[2..].trim_start_matches('/'))
         });
     }
-
-    Err(ParserError::UnsupportedStatement(format!(
-        "Unsupported SQL statement: {}",
-        sql
-    )))
+    if path.starts_with('~') {
+        return Err(ParserError::InvalidPath(path));
+    }
+    Ok(PathBuf::from(path))
 }
 
-/// Extracts a file path from an SQL query string.
-///
-/// This helper function parses the SQL statement to find the path specified
-/// after the FROM clause in SELECT queries or after the UPDATE keyword in
-/// UPDATE queries.
-///
-/// # Arguments
-///
-/// * `sql` - The SQL query string to parse
-///
-/// # Returns
-///
-/// * `Result<PathBuf>` - The extracted path or an error
-///
-/// # Path Resolution
-///
-/// The function handles several special cases:
-/// - `~` expands to the user's home directory
-/// - `~/path` expands to a path within the home directory
-/// - Relative paths are preserved as-is
-/// - Absolute paths are preserved as-is
-fn extract_path_from_sql(sql: &str) -> Result<PathBuf> {
-    // Look for "FROM" or the second word after "UPDATE" and extract the path
-    let path_str = if sql.to_uppercase().contains("FROM") {
-        // For SELECT queries or WITH RECURSIVE queries
-        let parts: Vec<&str> = sql.split_whitespace().collect();
-        let from_index = parts.iter().position(|&p| p.to_uppercase() == "FROM");
-
-        if let Some(idx) = from_index {
-            if idx + 1 < parts.len() {
-                parts[idx + 1]
-            } else {
-                return Err(ParserError::MissingClause(
-                    "Missing path after FROM".to_string(),
-                ));
-            }
-        } else {
-            return Err(ParserError::MissingClause(
-                "Missing FROM clause".to_string(),
-            ));
-        }
-    } else {
-        // For UPDATE queries
-        let parts: Vec<&str> = sql.split_whitespace().collect();
-        if parts.len() >= 2 {
-            parts[1]
-        } else {
-            return Err(ParserError::MissingClause(
-                "Missing path in UPDATE statement".to_string(),
-            ));
-        }
-    };
-
-    // Handle home directory expansion
-    let path = if path_str.starts_with("~/") {
-        if let Some(home_dir) = dirs::home_dir() {
-            home_dir.join(
-                path_str
-                    .strip_prefix("~/")
-                    .expect(r#"We've already checked path_str.starts_with("~/")"#),
-            )
-        } else {
-            return Err(ParserError::InvalidPath(
-                "Could not determine home directory".to_string(),
-            ));
-        }
-    } else if path_str.starts_with('~') {
-        if let Some(home_dir) = dirs::home_dir() {
-            home_dir
-        } else {
-            return Err(ParserError::InvalidPath(
-                "Could not determine home directory".to_string(),
-            ));
-        }
-    } else {
-        PathBuf::from(path_str)
-    };
-
-    Ok(path)
-}
-
-/// Extracts filtering conditions from an SQL query string.
-///
-/// This helper function parses the SQL statement to find the conditions
-/// specified in the WHERE clause and converts them into a `FileCondition`
-/// structure.
-///
-/// # Arguments
-///
-/// * `sql` - The SQL query string to parse
-///
-/// # Returns
-///
-/// * `Result<Option<FileCondition>>` - The extracted condition or None if no condition is present
-///
-/// # Supported Conditions
-///
-/// The function recognizes several condition types:
-/// - Regular expressions using REGEXP
-/// - Range conditions using BETWEEN
-/// - Pattern matching using LIKE
-/// - Basic comparisons (=, !=, >, <, etc.)
-/// - Logical combinations with AND, OR, NOT
-fn extract_condition_from_sql(sql: &str) -> Result<Option<FileCondition>> {
-    // Simple condition extraction based on string matching
-
-    // For REGEXP function
-    if sql.to_uppercase().contains("REGEXP")
-        && sql.contains("name")
-        && sql.contains("^server_[0-9]+\\.log$")
-    {
-        return Ok(Some(FileCondition::Regexp {
-            attribute: FileAttribute::Name,
-            pattern: "^server_[0-9]+\\.log$".to_string(),
-        }));
-    }
-
-    // For BETWEEN condition
-    if sql.to_uppercase().contains("BETWEEN")
-        && sql.contains("modified")
-        && sql.contains("2025-01-01")
-        && sql.contains("2025-03-31")
-    {
-        return Ok(Some(FileCondition::Between {
-            attribute: FileAttribute::Modified,
-            lower: FileValue::String("2025-01-01".to_string()),
-            upper: FileValue::String("2025-03-31".to_string()),
-        }));
-    }
-
-    // For LIKE condition
-    if sql.to_uppercase().contains("LIKE") && sql.contains("name") {
-        // Extract the pattern between quotes
-        if let Some(pattern) = sql
-            .split("LIKE")
-            .nth(1)
-            .and_then(|s| s.trim().split_once("'"))
-            .and_then(|(_, rest)| rest.split_once("'"))
-            .map(|(pattern, _)| pattern.to_string())
+fn path_token(token: &Token) -> Option<String> {
+    match token {
+        // Directory names such as `data` or `cache` are SQL keywords. Only the
+        // clause keywords that may follow a path mark a missing one.
+        Token::Word(word)
+            if word.quote_style.is_some()
+                || !matches!(word.keyword, Keyword::WHERE | Keyword::SET) =>
         {
-            return Ok(Some(FileCondition::Like {
-                attribute: FileAttribute::Name,
-                pattern,
-                case_sensitive: false,
-            }));
+            Some(word.value.clone())
         }
+        Token::Div | Token::Period | Token::Minus | Token::Tilde | Token::Number(_, false) => {
+            Some(token.to_string())
+        }
+        _ => None,
     }
+}
 
-    // For basic comparisons
-    if sql.contains("extension") && sql.contains(".txt") {
-        let condition = FileCondition::Compare {
-            attribute: FileAttribute::Extension,
-            operator: ComparisonOperator::Eq,
-            value: FileValue::String(".txt".to_string()),
-        };
+fn parse_updates(parser: &mut Parser<'_>) -> Result<Vec<FileAttributeUpdate>> {
+    parser.expect_keyword(Keyword::SET)?;
+    let attribute = parser.parse_identifier()?;
+    if !attribute.value.eq_ignore_ascii_case("permissions") {
+        return Err(ParserError::UnsupportedAttribute(attribute.value));
+    }
+    parser.expect_token(&Token::Eq)?;
+    let mode = octal_mode(&parser.parse_expr()?)?;
+    // Only one writable attribute exists. Additional assignments remain
+    // unconsumed and are rejected by the complete-query check.
+    Ok(vec![FileAttributeUpdate {
+        attribute: FileAttribute::Permissions,
+        value: format!("{mode:o}"),
+    }])
+}
 
-        // Handle AND conditions
-        if sql.to_uppercase().contains("AND") && sql.contains("size") && sql.contains("> 1000") {
-            let size_condition = FileCondition::Compare {
-                attribute: FileAttribute::Size,
-                operator: ComparisonOperator::Gt,
-                value: FileValue::Number(1000.0),
+/// Read a permission literal as octal digits, as `chmod` does. Filters and
+/// updates share this so `644` means the same mode in both.
+fn octal_mode(expr: &Expr) -> Result<u32> {
+    if let Expr::Value(value) = expr
+        && let Value::SingleQuotedString(digits) | Value::Number(digits, false) = &value.value
+        && digits.chars().all(|c| matches!(c, '0'..='7'))
+        && let Ok(mode) = u32::from_str_radix(digits, 8)
+        && mode <= 0o7777
+    {
+        return Ok(mode);
+    }
+    Err(invalid_value(&FileAttribute::Permissions, expr))
+}
+
+fn convert_condition(expr: &Expr) -> Result<FileCondition> {
+    match expr {
+        Expr::Nested(inner) => convert_condition(inner),
+        Expr::UnaryOp {
+            op: UnaryOperator::Not,
+            expr,
+        } => Ok(FileCondition::Not(Box::new(convert_condition(expr)?))),
+        Expr::BinaryOp {
+            left,
+            op: BinaryOperator::And,
+            right,
+        } => Ok(FileCondition::And(
+            Box::new(convert_condition(left)?),
+            Box::new(convert_condition(right)?),
+        )),
+        Expr::BinaryOp {
+            left,
+            op: BinaryOperator::Or,
+            right,
+        } => Ok(FileCondition::Or(
+            Box::new(convert_condition(left)?),
+            Box::new(convert_condition(right)?),
+        )),
+        Expr::BinaryOp { left, op, right } => {
+            let operator = comparison_operator(op)?;
+            let attribute = parse_attribute(left)?;
+            if equality_only(&attribute)
+                && !matches!(operator, ComparisonOperator::Eq | ComparisonOperator::NotEq)
+            {
+                return Err(unsupported(expr));
+            }
+            let value = parse_value(&attribute, right)?;
+            Ok(FileCondition::Compare {
+                attribute,
+                operator,
+                value,
+            })
+        }
+        Expr::Like {
+            negated,
+            any: false,
+            expr,
+            pattern,
+            escape_char: None,
+        }
+        | Expr::ILike {
+            negated,
+            any: false,
+            expr,
+            pattern,
+            escape_char: None,
+        } => {
+            let attribute = string_attribute(expr)?;
+            let pattern = string_literal(pattern)?;
+            Ok(negate(
+                FileCondition::Like {
+                    attribute,
+                    pattern,
+                    case_sensitive: false,
+                },
+                *negated,
+            ))
+        }
+        Expr::Between {
+            expr,
+            negated,
+            low,
+            high,
+        } => {
+            let attribute = parse_attribute(expr)?;
+            if equality_only(&attribute) {
+                return Err(unsupported(expr));
+            }
+            let lower = parse_value(&attribute, low)?;
+            let upper = parse_value(&attribute, high)?;
+            Ok(negate(
+                FileCondition::Between {
+                    attribute,
+                    lower,
+                    upper,
+                },
+                *negated,
+            ))
+        }
+        Expr::RLike {
+            negated,
+            expr,
+            pattern,
+            ..
+        } => Ok(negate(regexp(expr, pattern)?, *negated)),
+        Expr::Function(function) => convert_function(function),
+        _ => Err(unsupported(expr)),
+    }
+}
+
+/// Booleans have no order, and a mode is a bit set rather than a magnitude.
+fn equality_only(attribute: &FileAttribute) -> bool {
+    matches!(
+        attribute,
+        FileAttribute::IsDirectory | FileAttribute::IsExecutable | FileAttribute::Permissions
+    )
+}
+
+fn comparison_operator(operator: &BinaryOperator) -> Result<ComparisonOperator> {
+    match operator {
+        BinaryOperator::Eq => Ok(ComparisonOperator::Eq),
+        BinaryOperator::NotEq => Ok(ComparisonOperator::NotEq),
+        BinaryOperator::Lt => Ok(ComparisonOperator::Lt),
+        BinaryOperator::LtEq => Ok(ComparisonOperator::LtEq),
+        BinaryOperator::Gt => Ok(ComparisonOperator::Gt),
+        BinaryOperator::GtEq => Ok(ComparisonOperator::GtEq),
+        _ => Err(ParserError::UnsupportedExpression(operator.to_string())),
+    }
+}
+
+fn convert_function(function: &Function) -> Result<FileCondition> {
+    let Function {
+        name,
+        uses_odbc_syntax,
+        parameters,
+        args,
+        filter,
+        null_treatment,
+        over,
+        within_group,
+    } = function;
+    if name.0.len() != 1
+        || !name.to_string().eq_ignore_ascii_case("REGEXP")
+        || *uses_odbc_syntax
+        || !matches!(parameters, FunctionArguments::None)
+        || filter.is_some()
+        || null_treatment.is_some()
+        || over.is_some()
+        || !within_group.is_empty()
+    {
+        return Err(ParserError::UnsupportedExpression(function.to_string()));
+    }
+    if let FunctionArguments::List(list) = args
+        && list.duplicate_treatment.is_none()
+        && list.clauses.is_empty()
+        && let [
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(attribute)),
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(pattern)),
+        ] = list.args.as_slice()
+    {
+        return regexp(attribute, pattern);
+    }
+    Err(ParserError::UnsupportedExpression(function.to_string()))
+}
+
+fn regexp(attribute: &Expr, pattern: &Expr) -> Result<FileCondition> {
+    let attribute = string_attribute(attribute)?;
+    let pattern = string_literal(pattern)?;
+    regex::Regex::new(&pattern)?;
+    Ok(FileCondition::Regexp { attribute, pattern })
+}
+
+fn negate(condition: FileCondition, negated: bool) -> FileCondition {
+    if negated {
+        FileCondition::Not(Box::new(condition))
+    } else {
+        condition
+    }
+}
+
+fn parse_attribute(expr: &Expr) -> Result<FileAttribute> {
+    let Expr::Identifier(ident) = expr else {
+        return Err(unsupported(expr));
+    };
+    match ident.value.to_ascii_lowercase().as_str() {
+        "name" => Ok(FileAttribute::Name),
+        "path" => Ok(FileAttribute::Path),
+        "size" => Ok(FileAttribute::Size),
+        "extension" => Ok(FileAttribute::Extension),
+        "modified" => Ok(FileAttribute::Modified),
+        "permissions" => Ok(FileAttribute::Permissions),
+        "is_directory" => Ok(FileAttribute::IsDirectory),
+        "is_executable" => Ok(FileAttribute::IsExecutable),
+        _ => Err(ParserError::UnsupportedAttribute(ident.value.clone())),
+    }
+}
+
+fn string_attribute(expr: &Expr) -> Result<FileAttribute> {
+    let attribute = parse_attribute(expr)?;
+    if matches!(
+        attribute,
+        FileAttribute::Name | FileAttribute::Path | FileAttribute::Extension
+    ) {
+        Ok(attribute)
+    } else {
+        Err(unsupported(expr))
+    }
+}
+
+fn string_literal(expr: &Expr) -> Result<String> {
+    if let Expr::Value(value) = expr
+        && let Value::SingleQuotedString(s) = &value.value
+    {
+        return Ok(s.clone());
+    }
+    Err(unsupported(expr))
+}
+
+fn parse_value(attribute: &FileAttribute, expr: &Expr) -> Result<FileValue> {
+    match attribute {
+        FileAttribute::Name
+        | FileAttribute::Path
+        | FileAttribute::Extension
+        | FileAttribute::Modified => {
+            let mut value = string_literal(expr)?;
+            if *attribute == FileAttribute::Extension {
+                value = value.strip_prefix('.').unwrap_or(&value).to_owned();
+            }
+            if *attribute == FileAttribute::Modified
+                && value.parse::<DateTime<Utc>>().is_err()
+                && format!("{value}T00:00:00Z")
+                    .parse::<DateTime<Utc>>()
+                    .is_err()
+            {
+                return Err(invalid_value(attribute, expr));
+            }
+            Ok(FileValue::String(value))
+        }
+        FileAttribute::Permissions => Ok(FileValue::Number(f64::from(octal_mode(expr)?))),
+        FileAttribute::Size => {
+            let (expr, sign) = match expr {
+                Expr::UnaryOp {
+                    op: UnaryOperator::Minus,
+                    expr,
+                } => (expr.as_ref(), -1.0),
+                Expr::UnaryOp {
+                    op: UnaryOperator::Plus,
+                    expr,
+                } => (expr.as_ref(), 1.0),
+                _ => (expr, 1.0),
             };
-
-            return Ok(Some(FileCondition::And(
-                Box::new(condition),
-                Box::new(size_condition),
-            )));
+            if let Expr::Value(value) = expr
+                && let Value::Number(n, false) = &value.value
+                && let Ok(number) = n.parse::<f64>()
+                && number.is_finite()
+            {
+                return Ok(FileValue::Number(sign * number));
+            }
+            Err(invalid_value(attribute, expr))
         }
-
-        return Ok(Some(condition));
+        FileAttribute::IsDirectory | FileAttribute::IsExecutable => {
+            if let Expr::Value(value) = expr
+                && let Value::Boolean(b) = value.value
+            {
+                return Ok(FileValue::Boolean(b));
+            }
+            Err(invalid_value(attribute, expr))
+        }
+        _ => Err(ParserError::UnsupportedAttribute(format!("{attribute:?}"))),
     }
-
-    // For .bin files
-    if sql.contains("extension") && sql.contains(".bin") {
-        return Ok(Some(FileCondition::Compare {
-            attribute: FileAttribute::Extension,
-            operator: ComparisonOperator::Eq,
-            value: FileValue::String(".bin".to_string()),
-        }));
-    }
-
-    // If no condition is found, return None
-    if !sql.to_uppercase().contains("WHERE") {
-        return Ok(None);
-    }
-
-    // Default to a stub condition for testing
-    Ok(None)
 }
 
-/// Extracts attribute updates from an SQL update statement.
-///
-/// This helper function parses the SQL UPDATE statement to find the
-/// attribute updates specified in the SET clause and converts them into
-/// a list of `FileAttributeUpdate` structures.
-///
-/// # Arguments
-///
-/// * `sql` - The SQL query string to parse
-///
-/// # Returns
-///
-/// * `Result<Vec<FileAttributeUpdate>>` - The extracted updates or an error
-///
-/// # Examples
-///
-/// For a query like:
-/// ```sql
-/// UPDATE ~/scripts SET permissions = '755', owner = 'user' WHERE extension = 'sh'
-/// ```
-///
-/// This would extract two updates: one for permissions and one for owner.
-fn extract_updates_from_sql(sql: &str) -> Result<Vec<FileAttributeUpdate>> {
-    // Simple update extraction based on string matching
-    let mut updates = Vec::new();
-
-    // Look for updates after SET
-    if sql.to_uppercase().contains("SET") {
-        // Check for owner update first to match test expectation
-        if sql.contains("owner") && sql.contains("admin") {
-            updates.push(FileAttributeUpdate {
-                attribute: FileAttribute::Owner,
-                value: "admin".to_string(),
-            });
-        }
-
-        // Check for permissions update
-        if sql.contains("permissions") && sql.contains("755") {
-            updates.push(FileAttributeUpdate {
-                attribute: FileAttribute::Permissions,
-                value: "755".to_string(),
-            });
-        }
-    }
-
-    // Return updates
-    Ok(updates)
+fn unsupported(expr: &Expr) -> ParserError {
+    ParserError::UnsupportedExpression(expr.to_string())
 }
 
-// Include the tests module
+fn invalid_value(attribute: &FileAttribute, expr: &Expr) -> ParserError {
+    ParserError::InvalidValue {
+        attribute: attribute.clone(),
+        value: expr.to_string(),
+    }
+}
+
 #[cfg(test)]
 #[path = "parser_tests.rs"]
 mod tests;
-

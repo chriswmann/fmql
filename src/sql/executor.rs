@@ -101,9 +101,10 @@ pub fn execute_query(query: &FileQuery) -> Result<Vec<FileResult>> {
         } => execute_select(path, *recursive, attributes, condition.as_ref()),
         FileQuery::Update {
             path,
+            recursive,
             updates,
             condition,
-        } => execute_update(path, updates, condition.as_ref()),
+        } => execute_update(path, *recursive, updates, condition.as_ref()),
     }
 }
 
@@ -130,10 +131,11 @@ fn execute_select(
 /// Executes an UPDATE query.
 fn execute_update(
     path: &Path,
+    recursive: bool,
     updates: &[crate::sql::ast::FileAttributeUpdate],
     condition: Option<&FileCondition>,
 ) -> Result<Vec<FileResult>> {
-    let files = list_files(path, true)?;
+    let files = list_files(path, recursive)?;
     let filtered_files = if let Some(cond) = condition {
         files
             .into_iter()
@@ -146,6 +148,12 @@ fn execute_update(
     let mut updated_files = Vec::new();
 
     for file in filtered_files {
+        // Setting permissions acts on a link's target, which may lie outside
+        // the queried directory, so links are never updated.
+        if fs::symlink_metadata(&file.path)?.file_type().is_symlink() {
+            continue;
+        }
+
         let mut file_updated = false;
 
         for update in updates {
@@ -208,6 +216,11 @@ fn list_files(dir_path: &Path, recursive: bool) -> Result<Vec<FileResult>> {
             ))
         })?;
 
+        // Skip the root directory itself -- we only want its children.
+        if entry.path() == dir_path && entry.file_type().is_dir() {
+            continue;
+        }
+
         let file_result = create_file_result(entry.path())?;
         results.push(file_result);
     }
@@ -217,7 +230,9 @@ fn list_files(dir_path: &Path, recursive: bool) -> Result<Vec<FileResult>> {
 
 /// Creates a FileResult from a path.
 fn create_file_result(path: &Path) -> Result<FileResult> {
-    let metadata = fs::metadata(path)?;
+    // Describe a link by its target, falling back to the link itself when the
+    // target is missing so one broken link cannot fail the whole query.
+    let metadata = fs::metadata(path).or_else(|_| fs::symlink_metadata(path))?;
 
     let name = path
         .file_name()
@@ -298,10 +313,20 @@ fn evaluate_condition(file: &FileResult, condition: &FileCondition) -> Result<bo
                         pattern.to_lowercase()
                     };
 
-                    // Convert SQL LIKE pattern to regex
-                    let regex_pattern = pattern_str.replace('%', ".*").replace('_', ".");
+                    // Convert SQL LIKE pattern to regex.
+                    // Replace SQL wildcards with unique sentinels, escape
+                    // regex metacharacters in the rest, then substitute
+                    // sentinels with regex equivalents.
+                    let with_sentinels = pattern_str
+                        .replace('%', "\x00PERCENT\x00")
+                        .replace('_', "\x00UNDER\x00");
+                    let escaped = regex::escape(&with_sentinels);
+                    let regex_pattern = escaped
+                        .replace("\x00PERCENT\x00", ".*")
+                        .replace("\x00UNDER\x00", ".");
 
-                    let regex = Regex::new(&format!("^{}$", regex_pattern))?;
+                    // `(?s)` lets wildcards match a newline within a file name.
+                    let regex = Regex::new(&format!("(?s)^{}$", regex_pattern))?;
                     Ok(regex.is_match(&file_str))
                 }
                 _ => Err(ExecutorError::TypeError(format!(
@@ -349,7 +374,8 @@ fn get_attribute_value(file: &FileResult, attribute: &FileAttribute) -> Result<F
             file.extension.clone().unwrap_or_default(),
         )),
         FileAttribute::Modified => Ok(FileValue::DateTime(file.modified)),
-        FileAttribute::Permissions => Ok(FileValue::Number(file.permissions as f64)),
+        // Compare permission bits only; the raw mode also carries file-type bits.
+        FileAttribute::Permissions => Ok(FileValue::Number((file.permissions & 0o7777) as f64)),
         FileAttribute::IsDirectory => Ok(FileValue::Boolean(file.is_directory)),
         FileAttribute::Owner => {
             if let Some(owner) = &file.owner {
@@ -423,6 +449,27 @@ fn compare_values(
                 "Null values only support equality comparisons".to_string(),
             )),
         },
+        // Coerce a String into DateTime when the other operand is DateTime.
+        (FileValue::DateTime(l), FileValue::String(r)) => {
+            if let Ok(parsed) = parse_date_string(r) {
+                compare_values(&FileValue::DateTime(*l), operator, &FileValue::DateTime(parsed))
+            } else {
+                Err(ExecutorError::TypeError(format!(
+                    "Cannot parse '{}' as a date for comparison with DateTime",
+                    r
+                )))
+            }
+        }
+        (FileValue::String(l), FileValue::DateTime(r)) => {
+            if let Ok(parsed) = parse_date_string(l) {
+                compare_values(&FileValue::DateTime(parsed), operator, &FileValue::DateTime(*r))
+            } else {
+                Err(ExecutorError::TypeError(format!(
+                    "Cannot parse '{}' as a date for comparison with DateTime",
+                    l
+                )))
+            }
+        }
         _ => Err(ExecutorError::TypeError(format!(
             "Cannot compare values of different types: {:?} and {:?}",
             left, right
@@ -430,8 +477,30 @@ fn compare_values(
     }
 }
 
+/// Attempts to parse a date string into a `DateTime<Utc>`.
+///
+/// Supports the formats `YYYY-MM-DD` and full RFC 3339 / ISO 8601 timestamps.
+fn parse_date_string(s: &str) -> std::result::Result<DateTime<Utc>, ExecutorError> {
+    // Try full RFC 3339 first (e.g. "2025-01-01T00:00:00Z")
+    if let Ok(dt) = s.parse::<DateTime<Utc>>() {
+        return Ok(dt);
+    }
+    // Try bare date "YYYY-MM-DD" by appending midnight UTC
+    if let Ok(dt) = format!("{}T00:00:00Z", s).parse::<DateTime<Utc>>() {
+        return Ok(dt);
+    }
+    Err(ExecutorError::TypeError(format!(
+        "Cannot parse '{}' as a date",
+        s
+    )))
+}
+
 // Include the tests module
 #[cfg(test)]
 #[path = "executor_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "bug_regression_tests.rs"]
+mod bug_regression_tests;
 

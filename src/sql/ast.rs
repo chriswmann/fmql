@@ -85,6 +85,8 @@ pub enum FileQuery {
     Update {
         /// The directory path containing files to update.
         path: PathBuf,
+        /// Whether to search recursively through subdirectories.
+        recursive: bool,
         /// The attributes to update and their new values.
         updates: Vec<FileAttributeUpdate>,
         /// The conditions to filter files by (None means all files).

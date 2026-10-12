@@ -59,8 +59,8 @@ fn test_execute_select_all() {
 
     let results = execute_query(&query).unwrap();
 
-    // There should be 6 files (including the directory itself)
-    assert_eq!(results.len(), 6);
+    // There should be 5 entries (4 files + subdir, root directory excluded)
+    assert_eq!(results.len(), 5);
 
     // Verify some basic properties
     let files: Vec<_> = results
@@ -88,8 +88,8 @@ fn test_execute_select_recursive() {
 
     let results = execute_query(&query).unwrap();
 
-    // There should be 8 files (including the directories)
-    assert_eq!(results.len(), 8);
+    // There should be 7 entries (4 files + subdir + 2 subdir files, root excluded)
+    assert_eq!(results.len(), 7);
 
     let all_files: Vec<_> = results
         .iter()
@@ -261,6 +261,7 @@ fn test_execute_update_permissions() {
 
     let query = FileQuery::Update {
         path: dir.path().to_path_buf(),
+        recursive: true,
         updates,
         condition: Some(condition),
     };
