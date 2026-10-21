@@ -173,8 +173,17 @@ fn rejects_unsupported_or_incomplete_queries() {
         "SELECT * FROM . WHERE modified > 'not a date'",
         "SELECT name FROM .",
         "SELECT DISTINCT * FROM .",
-        "SELECT * FROM . ORDER BY size",
-        "SELECT * FROM . LIMIT 1",
+        "SELECT * FROM . ORDER BY",
+        "SELECT * FROM . ORDER BY size,",
+        "SELECT * FROM . ORDER BY unknown",
+        "SELECT * FROM . ORDER BY size + 1",
+        "SELECT * FROM . ORDER BY size NULLS FIRST",
+        "SELECT * FROM . LIMIT -1",
+        "SELECT * FROM . LIMIT 'x'",
+        "SELECT * FROM . LIMIT 1 OFFSET 1",
+        "SELECT * FROM . LIMIT 1 ORDER BY size",
+        "UPDATE . SET permissions = '600' ORDER BY size",
+        "UPDATE . SET permissions = '600' LIMIT 1",
         "SELECT * FROM . GROUP BY extension",
         "SELECT * FROM . JOIN other ON name = name",
         "SELECT * FROM . AS files",
@@ -511,4 +520,54 @@ fn metadata_attributes_filter_through_sql() {
     );
     // Birth times are optional, so only check that the query is accepted.
     parse_sql("SELECT * FROM . WHERE created BETWEEN '2000-01-01' AND '2100-01-01'").unwrap();
+}
+
+fn ordered_names(sql: &str) -> Vec<String> {
+    fmql::query(sql)
+        .unwrap_or_else(|err| panic!("{sql}: {err}"))
+        .into_iter()
+        .map(|f| f.name)
+        .collect()
+}
+
+#[test]
+fn order_by_and_limit_shape_select_results() {
+    let dir = fixture();
+    let from = format!("SELECT * FROM {}", dir.path().display());
+
+    // Without ORDER BY, entries come back in name order.
+    assert_eq!(
+        ordered_names(&from),
+        ["alpha.rs", "beta.txt", "it's.txt", "nested"]
+    );
+    assert_eq!(
+        ordered_names(&format!("{from} WHERE NOT is_directory ORDER BY size DESC")),
+        ["beta.txt", "alpha.rs", "it's.txt"]
+    );
+    assert_eq!(
+        ordered_names(&format!(
+            "{from} ORDER BY is_directory DESC, extension, name DESC"
+        )),
+        ["nested", "alpha.rs", "it's.txt", "beta.txt"]
+    );
+    assert_eq!(
+        ordered_names(&format!(
+            "{from} WHERE extension = 'txt' ORDER BY size ASC LIMIT 1;"
+        )),
+        ["it's.txt"]
+    );
+    assert_eq!(
+        ordered_names(&format!("{from} LIMIT 2")),
+        ["alpha.rs", "beta.txt"]
+    );
+    assert_eq!(
+        ordered_names(&format!("{from} LIMIT 0")),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        ordered_names(&format!(
+            "WITH RECURSIVE {from} WHERE extension = 'rs' ORDER BY path DESC"
+        )),
+        ["child.rs", "alpha.rs"]
+    );
 }

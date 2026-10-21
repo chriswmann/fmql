@@ -54,6 +54,8 @@ fn test_execute_select_all() {
         path: dir.path().to_path_buf(),
         recursive: false,
         attributes: vec![FileAttribute::All],
+        order_by: Vec::new(),
+        limit: None,
         condition: None,
     };
 
@@ -83,6 +85,8 @@ fn test_execute_select_recursive() {
         path: dir.path().to_path_buf(),
         recursive: true,
         attributes: vec![FileAttribute::All],
+        order_by: Vec::new(),
+        limit: None,
         condition: None,
     };
 
@@ -115,6 +119,8 @@ fn test_execute_select_with_extension_filter() {
         path: dir.path().to_path_buf(),
         recursive: true,
         attributes: vec![FileAttribute::All],
+        order_by: Vec::new(),
+        limit: None,
         condition: Some(condition),
     };
 
@@ -143,6 +149,8 @@ fn test_execute_select_with_name_like() {
         path: dir.path().to_path_buf(),
         recursive: true,
         attributes: vec![FileAttribute::All],
+        order_by: Vec::new(),
+        limit: None,
         condition: Some(condition),
     };
 
@@ -170,6 +178,8 @@ fn test_execute_select_with_size_comparison() {
         path: dir.path().to_path_buf(),
         recursive: false,
         attributes: vec![FileAttribute::All],
+        order_by: Vec::new(),
+        limit: None,
         condition: Some(condition),
     };
 
@@ -204,6 +214,8 @@ fn test_execute_select_with_complex_condition() {
         path: dir.path().to_path_buf(),
         recursive: true,
         attributes: vec![FileAttribute::All],
+        order_by: Vec::new(),
+        limit: None,
         condition: Some(combined_condition),
     };
 
@@ -229,6 +241,8 @@ fn test_execute_select_with_regexp() {
         path: dir.path().to_path_buf(),
         recursive: true,
         attributes: vec![FileAttribute::All],
+        order_by: Vec::new(),
+        limit: None,
         condition: Some(condition),
     };
 
@@ -279,6 +293,8 @@ fn select(dir: &Path, condition: FileCondition) -> FileQuery {
         path: dir.to_path_buf(),
         recursive: false,
         attributes: vec![FileAttribute::All],
+        order_by: Vec::new(),
+        limit: None,
         condition: Some(condition),
     }
 }
@@ -595,4 +611,41 @@ fn test_update_without_changes_still_validates_its_condition() {
     let err = execute_query(&query).unwrap_err();
 
     assert!(matches!(err, ExecutorError::InvalidRegex(_)), "{err:?}");
+}
+
+#[test]
+fn test_nulls_sort_after_values() {
+    use super::order_values;
+    use std::cmp::Ordering;
+
+    let value = FileValue::Number(1.0);
+    assert_eq!(order_values(&FileValue::Null, &value), Ordering::Greater);
+    assert_eq!(order_values(&value, &FileValue::Null), Ordering::Less);
+    assert_eq!(
+        order_values(&FileValue::Null, &FileValue::Null),
+        Ordering::Equal
+    );
+}
+
+#[test]
+fn test_order_by_star_is_rejected() {
+    let dir = setup_test_directory();
+    let query = FileQuery::Select {
+        path: dir.path().to_path_buf(),
+        recursive: false,
+        attributes: vec![FileAttribute::All],
+        condition: None,
+        order_by: vec![crate::sql::ast::OrderBy {
+            attribute: FileAttribute::All,
+            descending: false,
+        }],
+        limit: None,
+    };
+
+    let err = execute_query(&query).unwrap_err();
+
+    assert!(
+        matches!(err, ExecutorError::UnsupportedAttribute(_)),
+        "{err:?}"
+    );
 }

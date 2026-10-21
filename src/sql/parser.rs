@@ -1,6 +1,7 @@
 //! Parsing and validation for the supported file-query SQL subset.
 //!
-//! Supports `SELECT * FROM path [WHERE condition]` and
+//! Supports `SELECT * FROM path [WHERE condition] [ORDER BY attribute
+//! [ASC|DESC], ...] [LIMIT n]` and
 //! `UPDATE path SET permissions = '640' [WHERE condition]`.
 //! Prefix either with `WITH RECURSIVE` to include descendants. Double-quote
 //! paths containing spaces or SQL punctuation. Single-quote string literals,
@@ -24,6 +25,7 @@ use thiserror::Error;
 
 use crate::sql::ast::{
     ComparisonOperator, FileAttribute, FileAttributeUpdate, FileCondition, FileQuery, FileValue,
+    OrderBy,
 };
 use crate::sql::dialect::FileDialect;
 
@@ -49,6 +51,8 @@ pub enum ParserError {
     },
     #[error("Invalid regular expression: {0}")]
     InvalidRegex(#[from] regex::Error),
+    #[error("LIMIT {0} is too large")]
+    InvalidLimit(u64),
 }
 
 pub type Result<T> = std::result::Result<T, ParserError>;
@@ -82,6 +86,19 @@ pub fn parse_sql(sql: &str) -> Result<FileQuery> {
     } else {
         None
     };
+    // Updates have no order or limit; the clauses stay unconsumed and are
+    // rejected by the complete-query check.
+    let order_by = if select && parser.parse_keywords(&[Keyword::ORDER, Keyword::BY]) {
+        parse_order_by(&mut parser)?
+    } else {
+        Vec::new()
+    };
+    let limit = if select && parser.parse_keyword(Keyword::LIMIT) {
+        let limit = parser.parse_literal_uint()?;
+        Some(usize::try_from(limit).map_err(|_| ParserError::InvalidLimit(limit))?)
+    } else {
+        None
+    };
     let _ = parser.consume_token(&Token::SemiColon);
     parser.expect_token(&Token::EOF)?;
     if select {
@@ -90,6 +107,8 @@ pub fn parse_sql(sql: &str) -> Result<FileQuery> {
             recursive,
             attributes: vec![FileAttribute::All],
             condition,
+            order_by,
+            limit,
         })
     } else {
         Ok(FileQuery::Update {
@@ -158,6 +177,22 @@ fn path_token(token: &Token) -> Option<String> {
             Some(token.to_string())
         }
         _ => None,
+    }
+}
+
+fn parse_order_by(parser: &mut Parser<'_>) -> Result<Vec<OrderBy>> {
+    let mut keys = Vec::new();
+    loop {
+        let attribute = parse_attribute(&Expr::Identifier(parser.parse_identifier()?))?;
+        let descending =
+            parser.parse_one_of_keywords(&[Keyword::ASC, Keyword::DESC]) == Some(Keyword::DESC);
+        keys.push(OrderBy {
+            attribute,
+            descending,
+        });
+        if !parser.consume_token(&Token::Comma) {
+            return Ok(keys);
+        }
     }
 }
 

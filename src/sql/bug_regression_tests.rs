@@ -34,6 +34,8 @@ fn test_root_directory_excluded_from_results() {
         path: dir.path().to_path_buf(),
         recursive: false,
         attributes: vec![FileAttribute::All],
+        order_by: Vec::new(),
+        limit: None,
         condition: None,
     };
 
@@ -114,6 +116,8 @@ fn test_extension_comparison_no_leading_dot() {
         path: dir.path().to_path_buf(),
         recursive: false,
         attributes: vec![FileAttribute::All],
+        order_by: Vec::new(),
+        limit: None,
         condition: Some(condition),
     };
 
@@ -138,6 +142,8 @@ fn test_extension_with_leading_dot_matches_nothing() {
         path: dir.path().to_path_buf(),
         recursive: false,
         attributes: vec![FileAttribute::All],
+        order_by: Vec::new(),
+        limit: None,
         condition: Some(condition),
     };
 
@@ -166,6 +172,8 @@ fn test_between_modified_with_date_strings() {
         path: dir.path().to_path_buf(),
         recursive: false,
         attributes: vec![FileAttribute::All],
+        order_by: Vec::new(),
+        limit: None,
         condition: Some(condition),
     };
 
@@ -190,6 +198,8 @@ fn test_between_modified_excludes_outside_range() {
         path: dir.path().to_path_buf(),
         recursive: false,
         attributes: vec![FileAttribute::All],
+        order_by: Vec::new(),
+        limit: None,
         condition: Some(condition),
     };
 
@@ -223,6 +233,8 @@ fn test_like_does_not_interpret_dot_as_regex_wildcard() {
         path: dir.path().to_path_buf(),
         recursive: false,
         attributes: vec![FileAttribute::All],
+        order_by: Vec::new(),
+        limit: None,
         condition: Some(condition),
     };
 
@@ -249,6 +261,8 @@ fn test_like_percent_still_works_with_dots() {
         path: dir.path().to_path_buf(),
         recursive: false,
         attributes: vec![FileAttribute::All],
+        order_by: Vec::new(),
+        limit: None,
         condition: Some(condition),
     };
 

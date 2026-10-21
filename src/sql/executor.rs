@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 use nix::unistd::{Uid, User};
 use regex::{Regex, RegexBuilder};
 use serde::Serialize;
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs::{self, Permissions};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -16,6 +17,7 @@ use walkdir::WalkDir;
 
 use crate::sql::ast::{
     ComparisonOperator, FileAttribute, FileAttributeUpdate, FileCondition, FileQuery, FileValue,
+    OrderBy,
 };
 
 /// Errors that can occur during query execution.
@@ -116,7 +118,16 @@ pub fn execute_query(query: &FileQuery) -> Result<Vec<FileResult>> {
             recursive,
             attributes,
             condition,
-        } => execute_select(path, *recursive, attributes, condition.as_ref()),
+            order_by,
+            limit,
+        } => execute_select(
+            path,
+            *recursive,
+            attributes,
+            condition.as_ref(),
+            order_by,
+            *limit,
+        ),
         FileQuery::Update {
             path,
             recursive,
@@ -132,9 +143,38 @@ fn execute_select(
     recursive: bool,
     _attributes: &[FileAttribute],
     condition: Option<&FileCondition>,
+    order_by: &[OrderBy],
+    limit: Option<usize>,
 ) -> Result<Vec<FileResult>> {
+    for key in order_by {
+        attribute_kind(&key.attribute)?;
+    }
     let predicate = condition.map(Predicate::compile).transpose()?;
-    matching_files(path, recursive, predicate.as_ref())
+    let mut files = matching_files(path, recursive, predicate.as_ref())?;
+    if !order_by.is_empty() {
+        // A stable sort keeps traversal order between equal keys.
+        files.sort_by(|a, b| {
+            order_by
+                .iter()
+                .map(|key| {
+                    let ordering = order_values(
+                        &attribute_value(a, &key.attribute),
+                        &attribute_value(b, &key.attribute),
+                    );
+                    if key.descending {
+                        ordering.reverse()
+                    } else {
+                        ordering
+                    }
+                })
+                .find(|ordering| ordering.is_ne())
+                .unwrap_or(Ordering::Equal)
+        });
+    }
+    if let Some(limit) = limit {
+        files.truncate(limit);
+    }
+    Ok(files)
 }
 
 /// Executes an UPDATE query.
@@ -219,11 +259,15 @@ fn list_files(dir_path: &Path, recursive: bool) -> Result<Vec<FileResult>> {
     let mut owners = Owners::default();
 
     let walker = if recursive {
-        WalkDir::new(dir_path).follow_links(false).into_iter()
+        WalkDir::new(dir_path)
+            .follow_links(false)
+            .sort_by_file_name()
+            .into_iter()
     } else {
         WalkDir::new(dir_path)
             .max_depth(1)
             .follow_links(false)
+            .sort_by_file_name()
             .into_iter()
     };
 
@@ -568,6 +612,20 @@ fn compare_values(left: &FileValue, operator: &ComparisonOperator, right: &FileV
         (FileValue::Null, FileValue::Null) => *operator == ComparisonOperator::Eq,
         (FileValue::Null, _) | (_, FileValue::Null) => *operator == ComparisonOperator::NotEq,
         _ => unreachable!("compile checks operand types: {left:?} {operator} {right:?}"),
+    }
+}
+
+/// Orders two values of one attribute, placing nulls after everything else.
+fn order_values(left: &FileValue, right: &FileValue) -> Ordering {
+    match (left, right) {
+        (FileValue::String(l), FileValue::String(r)) => l.cmp(r),
+        (FileValue::Number(l), FileValue::Number(r)) => l.total_cmp(r),
+        (FileValue::DateTime(l), FileValue::DateTime(r)) => l.cmp(r),
+        (FileValue::Boolean(l), FileValue::Boolean(r)) => l.cmp(r),
+        (FileValue::Null, FileValue::Null) => Ordering::Equal,
+        (FileValue::Null, _) => Ordering::Greater,
+        (_, FileValue::Null) => Ordering::Less,
+        _ => unreachable!("one attribute yields one kind: {left:?} {right:?}"),
     }
 }
 
