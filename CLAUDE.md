@@ -42,6 +42,9 @@ sql string ──parse_sql()──▶ FileQuery (AST) ──execute_query()─�
 - `src/output.rs` — `render_text()` (`ls -l` style lines for `SELECT *`) and the
   projected `render_columns()` / `columns_json()`.
 - `src/main.rs` — `clap` CLI with one subcommand, `sql`, and a `--format text|json` flag.
+  `--sudo[=PROGRAM]` execs `PROGRAM <fmql> --home=<caller's home> <args less --sudo>`
+  unless already root; the hidden `--home` feeds `parse_sql_with_home`, so `~`
+  keeps meaning the caller's home under root.
   Errors go to stderr with exit code 1; clap usage errors exit with 2.
 
 Unit tests live in sibling `*_tests.rs` files pulled in via `#[cfg(test)] #[path = "..."] mod tests;`.
