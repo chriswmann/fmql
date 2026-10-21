@@ -44,7 +44,10 @@ sql string ──parse_sql()──▶ FileQuery (AST) ──execute_query()─�
 - `src/main.rs` — `clap` CLI with one subcommand, `sql`, and a `--format text|json` flag.
   `--sudo[=PROGRAM]` execs `PROGRAM <fmql> --home=<caller's home> <args less --sudo>`
   unless already root; the hidden `--home` feeds `parse_sql_with_home`, so `~`
-  keeps meaning the caller's home under root.
+  keeps meaning the caller's home under root. `--dry-run` prints `plan_update`
+  (`update_with` applying nothing, then `owner_change_mode` projecting the
+  setuid and setgid bits a change of owner clears on Linux) for an `UPDATE`; as root, a recursive update
+  asks first (`confirm`, refusing without a terminal) unless given `--yes`.
   Errors go to stderr with exit code 1; clap usage errors exit with 2.
 
 Unit tests live in sibling `*_tests.rs` files pulled in via `#[cfg(test)] #[path = "..."] mod tests;`.

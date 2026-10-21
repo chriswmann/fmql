@@ -3,7 +3,7 @@ use crate::sql::ast::{
     ComparisonOperator, FileAttribute, FileAttributeUpdate, FileCondition, FileQuery, FileValue,
     UpdateValue,
 };
-use crate::sql::executor::{ExecutorError, Op, execute_query};
+use crate::sql::executor::{ExecutorError, Op, execute_query, plan_update};
 use std::fs::{self, File};
 use std::io::Result as IoResult;
 use std::io::Write;
@@ -1201,6 +1201,78 @@ fn test_apply_op_sets_the_mode_of_a_regular_file() {
 }
 
 #[test]
+#[cfg(unix)]
+fn test_plan_update_reports_changes_without_making_them() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempdir().unwrap();
+    let file = create_test_file(dir.path(), "a.txt", "x").unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+    let query = FileQuery::Update {
+        path: dir.path().to_path_buf(),
+        recursive: false,
+        updates: vec![
+            FileAttributeUpdate {
+                attribute: FileAttribute::Permissions,
+                value: UpdateValue::Literal("600".to_string()),
+            },
+            FileAttributeUpdate {
+                attribute: FileAttribute::Name,
+                value: UpdateValue::Name(prefixed("n_")),
+            },
+        ],
+        condition: None,
+    };
+
+    let planned = plan_update(&query).unwrap();
+
+    assert_eq!(planned.len(), 1);
+    assert_eq!(planned[0].path, dir.path().join("n_a.txt"));
+    assert_eq!(planned[0].permissions & 0o7777, 0o600);
+    assert!(file.exists());
+    assert!(!dir.path().join("n_a.txt").exists());
+    assert_eq!(
+        fs::metadata(&file).unwrap().permissions().mode() & 0o7777,
+        0o644
+    );
+    // Applying the update then reports what the plan said.
+    let updated = execute_query(&query).unwrap();
+    assert_eq!(updated[0].path, planned[0].path);
+    assert_eq!(updated[0].permissions, planned[0].permissions);
+}
+
+#[test]
+fn test_plan_update_reports_errors_and_rejects_other_queries() {
+    let dir = setup_test_directory();
+    let unknown_owner = FileQuery::Update {
+        path: dir.path().to_path_buf(),
+        recursive: false,
+        updates: vec![FileAttributeUpdate {
+            attribute: FileAttribute::Owner,
+            value: UpdateValue::Literal("no-such-user-fmql".to_string()),
+        }],
+        condition: None,
+    };
+    let select = FileQuery::Select {
+        path: dir.path().to_path_buf(),
+        recursive: false,
+        attributes: vec![FileAttribute::All],
+        condition: None,
+        order_by: Vec::new(),
+        limit: None,
+    };
+
+    assert!(matches!(
+        plan_update(&unknown_owner),
+        Err(ExecutorError::UnknownUser(_))
+    ));
+    assert!(matches!(
+        plan_update(&select),
+        Err(ExecutorError::UnsupportedOperation(_))
+    ));
+}
+
+#[test]
 #[cfg(target_os = "linux")]
 fn test_chmod_through_descriptor_refuses_links_and_needs_no_read_permission() {
     use std::os::unix::fs::{PermissionsExt, symlink};
@@ -1222,4 +1294,61 @@ fn test_chmod_through_descriptor_refuses_links_and_needs_no_read_permission() {
         fs::metadata(&file).unwrap().permissions().mode() & 0o7777,
         0o640
     );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn test_plan_update_projects_the_bits_a_change_of_owner_clears() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Some(me) = current_user() else {
+        eprintln!("skipping: the current uid has no user database entry");
+        return;
+    };
+    let dir = tempdir().unwrap();
+    // Setgid without group execute marks mandatory locking and survives.
+    for (name, mode) in [("suid", 0o4755), ("sgid", 0o2755), ("lock", 0o2745)] {
+        let file = create_test_file(dir.path(), name, "x").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(mode)).unwrap();
+    }
+    fs::create_dir(dir.path().join("dir")).unwrap();
+    fs::set_permissions(dir.path().join("dir"), fs::Permissions::from_mode(0o2755)).unwrap();
+    let query = FileQuery::Update {
+        path: dir.path().to_path_buf(),
+        recursive: false,
+        updates: vec![FileAttributeUpdate {
+            attribute: FileAttribute::Owner,
+            value: UpdateValue::Literal(me),
+        }],
+        condition: None,
+    };
+
+    let planned = plan_update(&query).unwrap();
+    let updated = execute_query(&query).unwrap();
+
+    // The kernel decides what the update clears; the plan must agree.
+    let modes = |files: &[crate::sql::executor::FileResult]| -> Vec<(String, u32)> {
+        files
+            .iter()
+            .map(|file| (file.name.clone(), file.permissions & 0o7777))
+            .collect()
+    };
+    assert_eq!(modes(&planned), modes(&updated));
+    assert_eq!(
+        modes(&planned),
+        [
+            ("dir".to_string(), 0o2755),
+            ("lock".to_string(), 0o2745),
+            ("sgid".to_string(), 0o755),
+            ("suid".to_string(), 0o755),
+        ]
+    );
+}
+
+#[test]
+fn test_owner_change_mode_keeps_setgid_without_group_execute() {
+    assert_eq!(super::owner_change_mode(0o104_755), 0o100_755);
+    assert_eq!(super::owner_change_mode(0o102_755), 0o100_755);
+    assert_eq!(super::owner_change_mode(0o102_745), 0o102_745);
+    assert_eq!(super::owner_change_mode(0o106_711), 0o100_711);
 }
