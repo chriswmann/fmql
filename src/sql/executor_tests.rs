@@ -2,7 +2,7 @@
 use crate::sql::ast::{
     ComparisonOperator, FileAttribute, FileAttributeUpdate, FileCondition, FileQuery, FileValue,
 };
-use crate::sql::executor::execute_query;
+use crate::sql::executor::{ExecutorError, execute_query};
 use std::fs::{self, File};
 use std::io::Result as IoResult;
 use std::io::Write;
@@ -272,4 +272,242 @@ fn test_execute_update_permissions() {
     for file in &updated_files {
         assert_eq!(file.permissions & 0o777, 0o644);
     }
+}
+
+fn select(dir: &Path, condition: FileCondition) -> FileQuery {
+    FileQuery::Select {
+        path: dir.to_path_buf(),
+        recursive: false,
+        attributes: vec![FileAttribute::All],
+        condition: Some(condition),
+    }
+}
+
+#[test]
+fn test_type_mismatch_is_an_error_not_a_non_match() {
+    let dir = setup_test_directory();
+    let condition = FileCondition::Compare {
+        attribute: FileAttribute::Size,
+        operator: ComparisonOperator::Eq,
+        value: FileValue::String("big".to_string()),
+    };
+
+    let err = execute_query(&select(dir.path(), condition)).unwrap_err();
+
+    assert!(matches!(err, ExecutorError::TypeError(_)), "{err:?}");
+}
+
+#[test]
+fn test_unsupported_attribute_is_an_error() {
+    let dir = setup_test_directory();
+    let condition = FileCondition::Compare {
+        attribute: FileAttribute::Created,
+        operator: ComparisonOperator::Gt,
+        value: FileValue::String("2025-01-01".to_string()),
+    };
+
+    let err = execute_query(&select(dir.path(), condition)).unwrap_err();
+
+    assert!(
+        matches!(err, ExecutorError::UnsupportedAttribute(_)),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn test_like_on_non_string_attribute_is_an_error() {
+    let dir = setup_test_directory();
+    let condition = FileCondition::Like {
+        attribute: FileAttribute::Size,
+        pattern: "1%".to_string(),
+        case_sensitive: false,
+    };
+
+    let err = execute_query(&select(dir.path(), condition)).unwrap_err();
+
+    assert!(matches!(err, ExecutorError::TypeError(_)), "{err:?}");
+}
+
+#[test]
+fn test_invalid_regex_fails_before_listing_an_empty_directory() {
+    let dir = tempdir().unwrap();
+    let condition = FileCondition::Regexp {
+        attribute: FileAttribute::Name,
+        pattern: "(unclosed".to_string(),
+    };
+
+    let err = execute_query(&select(dir.path(), condition)).unwrap_err();
+
+    assert!(matches!(err, ExecutorError::InvalidRegex(_)), "{err:?}");
+}
+
+#[test]
+fn test_invalid_regex_in_unevaluated_branch_is_still_an_error() {
+    let dir = setup_test_directory();
+    let always_true = FileCondition::Compare {
+        attribute: FileAttribute::Size,
+        operator: ComparisonOperator::GtEq,
+        value: FileValue::Number(0.0),
+    };
+    let bad_regex = FileCondition::Regexp {
+        attribute: FileAttribute::Name,
+        pattern: "[".to_string(),
+    };
+    let condition = FileCondition::Or(Box::new(always_true), Box::new(bad_regex));
+
+    let err = execute_query(&select(dir.path(), condition)).unwrap_err();
+
+    assert!(matches!(err, ExecutorError::InvalidRegex(_)), "{err:?}");
+}
+
+#[test]
+fn test_case_sensitive_like_distinguishes_case() {
+    let dir = setup_test_directory();
+    let like = |case_sensitive| FileCondition::Like {
+        attribute: FileAttribute::Name,
+        pattern: "FILE%".to_string(),
+        case_sensitive,
+    };
+
+    let insensitive = execute_query(&select(dir.path(), like(false))).unwrap();
+    let sensitive = execute_query(&select(dir.path(), like(true))).unwrap();
+
+    assert_eq!(insensitive.len(), 2);
+    assert!(sensitive.is_empty());
+}
+
+#[test]
+#[cfg(unix)]
+fn test_update_with_failing_condition_changes_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = setup_test_directory();
+    let target = dir.path().join("file1.txt");
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+    let condition = FileCondition::Or(
+        Box::new(FileCondition::Compare {
+            attribute: FileAttribute::Name,
+            operator: ComparisonOperator::Eq,
+            value: FileValue::String("file1.txt".to_string()),
+        }),
+        Box::new(FileCondition::Compare {
+            attribute: FileAttribute::Size,
+            operator: ComparisonOperator::Eq,
+            value: FileValue::Boolean(true),
+        }),
+    );
+    let query = FileQuery::Update {
+        path: dir.path().to_path_buf(),
+        recursive: false,
+        updates: vec![FileAttributeUpdate {
+            attribute: FileAttribute::Permissions,
+            value: "777".to_string(),
+        }],
+        condition: Some(condition),
+    };
+
+    let err = execute_query(&query).unwrap_err();
+
+    assert!(matches!(err, ExecutorError::TypeError(_)), "{err:?}");
+    let mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+}
+
+#[test]
+fn test_unparsable_date_literal_is_an_error() {
+    let dir = setup_test_directory();
+    let condition = FileCondition::Compare {
+        attribute: FileAttribute::Modified,
+        operator: ComparisonOperator::Gt,
+        value: FileValue::String("last tuesday".to_string()),
+    };
+
+    let err = execute_query(&select(dir.path(), condition)).unwrap_err();
+
+    assert!(matches!(err, ExecutorError::TypeError(_)), "{err:?}");
+}
+
+#[test]
+fn test_ordering_a_boolean_is_unsupported() {
+    let dir = setup_test_directory();
+    let condition = FileCondition::Compare {
+        attribute: FileAttribute::IsDirectory,
+        operator: ComparisonOperator::Lt,
+        value: FileValue::Boolean(true),
+    };
+
+    let err = execute_query(&select(dir.path(), condition)).unwrap_err();
+
+    assert!(
+        matches!(err, ExecutorError::UnsupportedOperation(_)),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn test_unknown_owner_equals_only_null() {
+    let dir = setup_test_directory();
+    let owner_is = |value| FileCondition::Compare {
+        attribute: FileAttribute::Owner,
+        operator: ComparisonOperator::Eq,
+        value,
+    };
+
+    let null = execute_query(&select(dir.path(), owner_is(FileValue::Null))).unwrap();
+    let named = execute_query(&select(
+        dir.path(),
+        owner_is(FileValue::String("root".into())),
+    ));
+
+    assert_eq!(null.len(), 5);
+    assert!(named.unwrap().is_empty());
+}
+
+#[test]
+#[cfg(unix)]
+fn test_invalid_update_value_changes_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = setup_test_directory();
+    let target = dir.path().join("file1.txt");
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+    let query = FileQuery::Update {
+        path: dir.path().to_path_buf(),
+        recursive: false,
+        updates: vec![
+            FileAttributeUpdate {
+                attribute: FileAttribute::Permissions,
+                value: "644".to_string(),
+            },
+            FileAttributeUpdate {
+                attribute: FileAttribute::Permissions,
+                value: "17777".to_string(),
+            },
+        ],
+        condition: None,
+    };
+
+    let err = execute_query(&query).unwrap_err();
+
+    assert!(matches!(err, ExecutorError::TypeError(_)), "{err:?}");
+    let mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+}
+
+#[test]
+fn test_update_without_changes_still_validates_its_condition() {
+    let dir = setup_test_directory();
+    let query = FileQuery::Update {
+        path: dir.path().to_path_buf(),
+        recursive: false,
+        updates: Vec::new(),
+        condition: Some(FileCondition::Regexp {
+            attribute: FileAttribute::Name,
+            pattern: "[".to_string(),
+        }),
+    };
+
+    let err = execute_query(&query).unwrap_err();
+
+    assert!(matches!(err, ExecutorError::InvalidRegex(_)), "{err:?}");
 }
