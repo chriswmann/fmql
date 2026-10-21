@@ -27,9 +27,11 @@ SELECT * FROM ~/Documents WHERE size > 1000000 AND modified > '2025-01-01'
 
 - **SQL-like Querying**: `SELECT * FROM ~/memes WHERE extension = 'jpg' AND name LIKE '%cat%'` because who needs GUI file search when you can type a novel?
 - **Slightly Fast**: Traverses your filesystem faster than you can say "where did I put that file again?" ten times.
-- **Detailed File Info**: Size, permissions, timestamps, and more. Like `ls -la` but dysfunctional and with a bad attitude.
-- **Recursive Listing**: Who needs `fd` when you can use fmql? (Everybody, actually.)
-- **Output Formats**: Text or JSON (`--format json`).
+- **Detailed File Info**: Size, permissions, owner, modified/created/accessed times, symlinks. Like `ls -la` but dysfunctional and with a bad attitude.
+- **Sorting, Limits and Columns**: `SELECT name, size FROM . ORDER BY size DESC LIMIT 10`, for when `du | sort | head` is too few characters.
+- **Recursive Listing**: `WITH RECURSIVE SELECT ...`. Who needs `fd` when you can use fmql? (Everybody, actually.)
+- **Output Formats**: `ls -l` style text, or JSON (`--format json`).
+- **Safe-ish Updates**: Permission changes are validated before anything is touched and rolled back if one fails part way.
 
 ## 🔧 Installation (No Magic Required)
 
@@ -130,8 +132,27 @@ fmql sql "SELECT * FROM ~/Downloads WHERE name LIKE '%meme%' AND size > 1000000"
 fmql sql "SELECT * FROM ~/Pictures WHERE name LIKE '%screenshot%' AND modified BETWEEN '2026-10-01T03:00:00Z' AND '2026-10-01T03:59:59Z'"
 
 # Look for suspicious executables
-fmql sql "SELECT * FROM ~/Downloads WHERE is_executable = true AND extension != 'sh'"
+fmql sql "SELECT * FROM ~/Downloads WHERE is_executable AND extension != 'sh'"
+
+# The ten biggest files anywhere under your home directory
+fmql sql "WITH RECURSIVE SELECT size, path FROM ~ WHERE NOT is_directory ORDER BY size DESC LIMIT 10"
+
+# Files not owned by chris (unknown owners match too, since null != 'chris'), as JSON for jq
+fmql sql "WITH RECURSIVE SELECT path, owner FROM . WHERE owner != 'chris'" --format json
+
+# Symbolic links, oldest first
+fmql sql "SELECT name, modified FROM /usr/local/bin WHERE is_symlink ORDER BY modified"
 ```
+
+Text output for `SELECT *` looks like `ls -l`, one entry per line:
+
+```text
+-rwxr-xr-x  1832  2026-10-01 09:12  /home/you/scripts/backup.sh
+drwxr-x---  4096  2026-09-14 18:40  /home/you/scripts/lib
+```
+
+Errors go to standard error with exit code 1, so standard output only ever
+holds results.
 
 ## 🤝 Contributing
 

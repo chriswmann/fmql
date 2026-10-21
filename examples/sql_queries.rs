@@ -1,3 +1,5 @@
+use fmql::output::render_columns;
+use fmql::sql::ast::FileAttribute;
 use fmql::sql::{execute_query, parse_sql};
 use std::fs::{self, File};
 use std::io::Write;
@@ -135,6 +137,9 @@ fn main() {
     println!("\n=== Recursive Queries ===");
     recursive_queries(&dir_path);
 
+    println!("\n=== Sorting, Limits and Columns ===");
+    sorted_queries(&dir_path);
+
     #[cfg(unix)]
     {
         println!("\n=== Update Queries ===");
@@ -143,6 +148,28 @@ fn main() {
 
     // The temporary directory will be automatically cleaned up when temp_dir goes out of scope
     println!("\nTemporary directory will be cleaned up automatically");
+}
+
+/// ORDER BY, LIMIT and projected columns, rendered as the CLI renders them
+fn sorted_queries(dir_path: &Path) {
+    let query = format!(
+        "WITH RECURSIVE SELECT size, name FROM {} WHERE NOT is_directory \
+         ORDER BY size DESC, name LIMIT 3",
+        dir_path.display()
+    );
+    println!("Query: {query}");
+
+    match parse_sql(&query) {
+        Ok(parsed_query) => match execute_query(&parsed_query) {
+            Ok(results) => {
+                let columns = [FileAttribute::Size, FileAttribute::Name];
+                println!("The three largest files:");
+                print!("{}", render_columns(&results, &columns));
+            }
+            Err(err) => eprintln!("Error executing query: {err}"),
+        },
+        Err(err) => eprintln!("Error parsing SQL query: {err}"),
+    }
 }
 
 /// Basic SELECT queries without filtering
