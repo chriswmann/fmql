@@ -24,8 +24,8 @@ use sqlparser::tokenizer::Token;
 use thiserror::Error;
 
 use crate::sql::ast::{
-    ComparisonOperator, FileAttribute, FileAttributeUpdate, FileCondition, FileQuery, FileValue,
-    NameExpr, OrderBy, UpdateValue,
+    AggregateFunction, Column, ComparisonOperator, FileAttribute, FileAttributeUpdate,
+    FileCondition, FileQuery, FileValue, GroupOrder, NameExpr, OrderBy, UpdateValue,
 };
 use crate::sql::dialect::FileDialect;
 
@@ -53,6 +53,8 @@ pub enum ParserError {
     InvalidRegex(#[from] regex::Error),
     #[error("Attribute assigned more than once: {0}")]
     DuplicateAssignment(String),
+    #[error("{0} must appear in GROUP BY or inside an aggregate")]
+    UngroupedColumn(String),
     #[error("Column selected more than once: {0}")]
     DuplicateColumn(String),
     #[error("LIMIT {0} is too large")]
@@ -72,9 +74,10 @@ pub fn parse_sql(sql: &str) -> Result<FileQuery> {
     let mut parser = Parser::new(&dialect).try_with_sql(sql)?;
     let recursive = parser.parse_keywords(&[Keyword::WITH, Keyword::RECURSIVE]);
     let select = parser.parse_keyword(Keyword::SELECT);
-    let mut attributes = vec![FileAttribute::All];
+    // `None` stands for `*`.
+    let mut columns = None;
     if select {
-        attributes = parse_projection(&mut parser)?;
+        columns = parse_select_list(&mut parser)?;
         parser.expect_keyword(Keyword::FROM)?;
     } else if !parser.parse_keyword(Keyword::UPDATE) {
         return Err(ParserError::UnsupportedStatement(sql.to_owned()));
@@ -90,8 +93,13 @@ pub fn parse_sql(sql: &str) -> Result<FileQuery> {
     } else {
         None
     };
-    // Updates have no order or limit; the clauses stay unconsumed and are
-    // rejected by the complete-query check.
+    // Updates have no grouping, order or limit; the clauses stay unconsumed
+    // and are rejected by the complete-query check.
+    let group_by = if select && parser.parse_keywords(&[Keyword::GROUP, Keyword::BY]) {
+        parse_group_by(&mut parser)?
+    } else {
+        Vec::new()
+    };
     let order_by = if select && parser.parse_keywords(&[Keyword::ORDER, Keyword::BY]) {
         parse_order_by(&mut parser)?
     } else {
@@ -105,23 +113,108 @@ pub fn parse_sql(sql: &str) -> Result<FileQuery> {
     };
     let _ = parser.consume_token(&Token::SemiColon);
     parser.expect_token(&Token::EOF)?;
-    if select {
-        Ok(FileQuery::Select {
-            path,
-            recursive,
-            attributes,
-            condition,
-            order_by,
-            limit,
-        })
-    } else {
-        Ok(FileQuery::Update {
+    if !select {
+        return Ok(FileQuery::Update {
             path,
             recursive,
             updates,
             condition,
-        })
+        });
     }
+    select_query(SelectParts {
+        path,
+        recursive,
+        columns,
+        condition,
+        group_by,
+        order_by,
+        limit,
+    })
+}
+
+/// The clauses of a `SELECT`, before deciding whether it groups.
+struct SelectParts {
+    path: PathBuf,
+    recursive: bool,
+    columns: Option<Vec<Column>>,
+    condition: Option<FileCondition>,
+    group_by: Vec<FileAttribute>,
+    order_by: Vec<GroupOrder>,
+    limit: Option<usize>,
+}
+
+/// Builds a grouped query when there is a `GROUP BY` or an aggregate in the
+/// select list, and a plain `SELECT` otherwise.
+fn select_query(parts: SelectParts) -> Result<FileQuery> {
+    let SelectParts {
+        path,
+        recursive,
+        columns,
+        condition,
+        group_by,
+        order_by,
+        limit,
+    } = parts;
+    let aggregates = |columns: &[Column]| {
+        columns
+            .iter()
+            .any(|column| matches!(column, Column::Aggregate { .. }))
+    };
+    let grouped = !group_by.is_empty() || columns.as_deref().is_some_and(aggregates);
+    if grouped {
+        let columns = columns.ok_or_else(|| {
+            ParserError::UnsupportedExpression("SELECT * with GROUP BY or an aggregate".to_owned())
+        })?;
+        for column in columns.iter().chain(order_by.iter().map(|key| &key.column)) {
+            if let Column::Attribute(attribute) = column
+                && !group_by.contains(attribute)
+            {
+                return Err(ParserError::UngroupedColumn(attribute.name().to_owned()));
+            }
+        }
+        return Ok(FileQuery::Group {
+            path,
+            recursive,
+            columns,
+            condition,
+            group_by,
+            order_by,
+            limit,
+        });
+    }
+    let order_by = order_by
+        .into_iter()
+        .map(|key| match key.column {
+            Column::Attribute(attribute) => Ok(OrderBy {
+                attribute,
+                descending: key.descending,
+            }),
+            column @ Column::Aggregate { .. } => Err(ParserError::UnsupportedExpression(format!(
+                "ORDER BY {} without GROUP BY or an aggregate in the select list",
+                column.label()
+            ))),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let attributes = columns.map_or_else(
+        || vec![FileAttribute::All],
+        |columns| {
+            columns
+                .into_iter()
+                .filter_map(|column| match column {
+                    Column::Attribute(attribute) => Some(attribute),
+                    Column::Aggregate { .. } => None,
+                })
+                .collect()
+        },
+    );
+    Ok(FileQuery::Select {
+        path,
+        recursive,
+        attributes,
+        condition,
+        order_by,
+        limit,
+    })
 }
 
 fn parse_path(parser: &mut Parser<'_>) -> Result<PathBuf> {
@@ -184,11 +277,26 @@ fn path_token(token: &Token) -> Option<String> {
     }
 }
 
-/// Reads `*` or a list of distinct attributes. `*` stands alone.
-fn parse_projection(parser: &mut Parser<'_>) -> Result<Vec<FileAttribute>> {
+/// Reads `*`, returned as `None`, or a list of distinct columns. `*` stands
+/// alone.
+fn parse_select_list(parser: &mut Parser<'_>) -> Result<Option<Vec<Column>>> {
     if parser.consume_token(&Token::Mul) {
-        return Ok(vec![FileAttribute::All]);
+        return Ok(None);
     }
+    let mut columns: Vec<Column> = Vec::new();
+    loop {
+        let column = column(&parser.parse_expr()?)?;
+        if columns.contains(&column) {
+            return Err(ParserError::DuplicateColumn(column.label()));
+        }
+        columns.push(column);
+        if !parser.consume_token(&Token::Comma) {
+            return Ok(Some(columns));
+        }
+    }
+}
+
+fn parse_group_by(parser: &mut Parser<'_>) -> Result<Vec<FileAttribute>> {
     let mut attributes = Vec::new();
     loop {
         let attribute = parse_attribute(&Expr::Identifier(parser.parse_identifier()?))?;
@@ -202,20 +310,54 @@ fn parse_projection(parser: &mut Parser<'_>) -> Result<Vec<FileAttribute>> {
     }
 }
 
-fn parse_order_by(parser: &mut Parser<'_>) -> Result<Vec<OrderBy>> {
+fn parse_order_by(parser: &mut Parser<'_>) -> Result<Vec<GroupOrder>> {
     let mut keys = Vec::new();
     loop {
-        let attribute = parse_attribute(&Expr::Identifier(parser.parse_identifier()?))?;
+        let column = column(&parser.parse_expr()?)?;
         let descending =
             parser.parse_one_of_keywords(&[Keyword::ASC, Keyword::DESC]) == Some(Keyword::DESC);
-        keys.push(OrderBy {
-            attribute,
-            descending,
-        });
+        keys.push(GroupOrder { column, descending });
         if !parser.consume_token(&Token::Comma) {
             return Ok(keys);
         }
     }
+}
+
+/// Converts a select-list or sort item: an attribute or an aggregate call.
+fn column(expr: &Expr) -> Result<Column> {
+    let Expr::Function(function) = expr else {
+        return Ok(Column::Attribute(parse_attribute(expr)?));
+    };
+    let Some((name, args)) = plain_args(function) else {
+        return Err(unsupported(expr));
+    };
+    let aggregate = match name.as_str() {
+        "COUNT" => AggregateFunction::Count,
+        "SUM" => AggregateFunction::Sum,
+        "AVG" => AggregateFunction::Avg,
+        "MIN" => AggregateFunction::Min,
+        "MAX" => AggregateFunction::Max,
+        _ => return Err(unsupported(expr)),
+    };
+    let attribute = match args {
+        [FunctionArg::Unnamed(FunctionArgExpr::Wildcard)]
+            if aggregate == AggregateFunction::Count =>
+        {
+            None
+        }
+        [FunctionArg::Unnamed(FunctionArgExpr::Expr(arg))] => Some(parse_attribute(arg)?),
+        _ => return Err(unsupported(expr)),
+    };
+    if matches!(aggregate, AggregateFunction::Sum | AggregateFunction::Avg)
+        // Adding permission bits means nothing; size is the only quantity.
+        && attribute != Some(FileAttribute::Size)
+    {
+        return Err(unsupported(expr));
+    }
+    Ok(Column::Aggregate {
+        function: aggregate,
+        attribute,
+    })
 }
 
 fn parse_updates(parser: &mut Parser<'_>) -> Result<Vec<FileAttributeUpdate>> {
@@ -414,6 +556,20 @@ fn convert_function(function: &Function) -> Result<FileCondition> {
 /// The upper-case name and positional arguments of a plain call such as
 /// `F(a, b)`, or `None` if it uses any other function syntax.
 fn plain_call(function: &Function) -> Option<(String, Vec<&Expr>)> {
+    let (name, args) = plain_args(function)?;
+    let args = args
+        .iter()
+        .map(|arg| match arg {
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => Some(expr),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some((name, args))
+}
+
+/// The upper-case name and raw arguments of a call with no modifiers such as
+/// `DISTINCT`, `FILTER`, `OVER` or `ORDER BY`.
+fn plain_args(function: &Function) -> Option<(String, &[FunctionArg])> {
     let Function {
         name,
         uses_odbc_syntax,
@@ -440,15 +596,7 @@ fn plain_call(function: &Function) -> Option<(String, Vec<&Expr>)> {
     if list.duplicate_treatment.is_some() || !list.clauses.is_empty() {
         return None;
     }
-    let args = list
-        .args
-        .iter()
-        .map(|arg| match arg {
-            FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => Some(expr),
-            _ => None,
-        })
-        .collect::<Option<Vec<_>>>()?;
-    Some((name.to_string().to_ascii_uppercase(), args))
+    Some((name.to_string().to_ascii_uppercase(), &list.args))
 }
 
 /// Converts the right-hand side of `SET name = ...`.
