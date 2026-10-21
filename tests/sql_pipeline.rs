@@ -122,7 +122,7 @@ fn rejected_updates_fail_in_cli_without_changing_files() {
     for suffix in [
         "SET permissions = '755' WHERE name IN ('alpha.rs')",
         "SET permissions = '755' WHERE name LIKE '%.rs' AND unknown = 1",
-        "SET permissions = '755', owner = 'admin'",
+        "SET permissions = '755', size = 1",
         "SET permissions = '755', permissions = '888'",
         "SET permissions = '755' WHERE REGEXP(name, '[')",
         "SET permissions = '755' WHERE size = 'four'",
@@ -197,7 +197,7 @@ fn rejects_unsupported_or_incomplete_queries() {
         "SELECT * FROM . AS files",
         "SELECT * FROM .; SELECT * FROM ..",
         "UPDATE . SET",
-        "UPDATE . SET owner = 'bob'",
+        "UPDATE . SET owner = 'bob', owner = 'eve'",
         "UPDATE . SET permissions = '888'",
         "UPDATE . SET permissions = '10000'",
         "UPDATE . SET permissions = '600', permissions = '700'",
@@ -653,4 +653,55 @@ fn mode_matches_permissions_as_ls_shows_them() {
     let _socket = std::os::unix::net::UnixListener::bind(dir.path().join("sock")).unwrap();
     assert_eq!(names(dir.path(), "", "mode LIKE 's%'"), ["sock"]);
     assert!(!names(dir.path(), "", "mode LIKE '-%'").contains(&"sock".to_string()));
+}
+
+#[test]
+fn owner_updates_resolve_users_before_changing_anything() {
+    let dir = fixture();
+    let sql = format!(
+        "UPDATE {} SET permissions = '600', owner = 'no-such-user-fmql' WHERE name = 'alpha.rs'",
+        dir.path().display()
+    );
+    let output = fmql(&["sql", &sql]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Unknown user: no-such-user-fmql"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(mode(&dir.path().join("alpha.rs")), 0o640);
+}
+
+#[test]
+fn owner_and_permissions_update_together() {
+    let Some(me) = nix::unistd::User::from_uid(nix::unistd::getuid())
+        .ok()
+        .flatten()
+        .map(|user| user.name)
+    else {
+        eprintln!("skipping: the current uid has no user database entry");
+        return;
+    };
+    let dir = fixture();
+    // Without privileges a file can only be given to its current owner, which
+    // still exercises the whole path through chown.
+    let sql = format!(
+        "UPDATE {} SET owner = '{me}', permissions = '604' WHERE extension = 'txt'",
+        dir.path().display()
+    );
+    let updated = fmql::query(&sql).unwrap();
+    let mut summary: Vec<_> = updated
+        .iter()
+        .map(|f| (f.name.as_str(), f.owner.as_deref(), f.permissions & 0o7777))
+        .collect();
+    summary.sort_unstable();
+    assert_eq!(
+        summary,
+        [
+            ("beta.txt", Some(me.as_str()), 0o604),
+            ("it's.txt", Some(me.as_str()), 0o604)
+        ]
+    );
+    assert_eq!(mode(&dir.path().join("beta.txt")), 0o604);
+    assert_eq!(mode(&dir.path().join("alpha.rs")), 0o640);
 }
