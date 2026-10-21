@@ -2,7 +2,7 @@
 use crate::sql::ast::{
     ComparisonOperator, FileAttribute, FileAttributeUpdate, FileCondition, FileQuery, FileValue,
 };
-use crate::sql::executor::{ExecutorError, execute_query};
+use crate::sql::executor::{ExecutorError, Op, execute_query};
 use std::fs::{self, File};
 use std::io::Result as IoResult;
 use std::io::Write;
@@ -656,6 +656,13 @@ fn mode_of(path: &Path) -> u32 {
     fs::metadata(path).unwrap().permissions().mode() & 0o7777
 }
 
+fn mode_change(mode: u32) -> super::Changes {
+    super::Changes {
+        mode: Some(mode),
+        owner: None,
+    }
+}
+
 #[cfg(unix)]
 fn three_files(dir: &Path) -> Vec<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
@@ -672,17 +679,15 @@ fn three_files(dir: &Path) -> Vec<PathBuf> {
 #[test]
 #[cfg(unix)]
 fn test_failed_update_rolls_back_earlier_changes() {
-    use std::os::unix::fs::PermissionsExt;
-
     let dir = tempdir().unwrap();
     let paths = three_files(dir.path());
     let failing = paths[2].clone();
 
-    let err = super::apply_mode(&paths, 0o755, |path, mode| {
-        if path == failing && mode == 0o755 {
+    let err = super::apply_changes(&paths, &mode_change(0o755), |path, op| {
+        if path == failing && op == Op::SetMode(0o755) {
             return Err(std::io::Error::other("injected"));
         }
-        fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        super::apply_op(path, op)
     })
     .unwrap_err();
 
@@ -699,17 +704,17 @@ fn test_failed_update_rolls_back_earlier_changes() {
 #[test]
 #[cfg(unix)]
 fn test_failed_rollback_names_the_files_left_changed() {
-    use std::os::unix::fs::PermissionsExt;
-
     let dir = tempdir().unwrap();
     let paths = three_files(dir.path());
     let (stuck, failing) = (paths[0].clone(), paths[2].clone());
 
-    let err = super::apply_mode(&paths, 0o755, |path, mode| {
-        if (path == failing && mode == 0o755) || (path == stuck && mode == 0o600) {
+    let err = super::apply_changes(&paths, &mode_change(0o755), |path, op| {
+        if (path == failing && op == Op::SetMode(0o755))
+            || (path == stuck && op == Op::SetMode(0o600))
+        {
             return Err(std::io::Error::other("injected"));
         }
-        fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        super::apply_op(path, op)
     })
     .unwrap_err();
 
@@ -759,8 +764,6 @@ fn test_successful_update_reports_every_changed_file() {
 #[test]
 #[cfg(unix)]
 fn test_update_query_surfaces_a_rolled_back_failure() {
-    use std::os::unix::fs::PermissionsExt;
-
     let dir = tempdir().unwrap();
     let paths = three_files(dir.path());
     let failing = paths[1].clone();
@@ -769,11 +772,11 @@ fn test_update_query_surfaces_a_rolled_back_failure() {
         value: "755".to_string(),
     }];
 
-    let err = super::update_with(dir.path(), false, &updates, None, |path, mode| {
-        if path == failing && mode == 0o755 {
+    let err = super::update_with(dir.path(), false, &updates, None, |path, op| {
+        if path == failing && op == Op::SetMode(0o755) {
             return Err(std::io::Error::other("injected"));
         }
-        fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        super::apply_op(path, op)
     })
     .unwrap_err();
 
@@ -784,4 +787,88 @@ fn test_update_query_surfaces_a_rolled_back_failure() {
     for path in &paths {
         assert_eq!(mode_of(path), 0o600, "{}", path.display());
     }
+}
+
+#[test]
+#[cfg(unix)]
+fn test_failed_owner_change_restores_owner_then_mode() {
+    use std::os::unix::fs::MetadataExt;
+
+    let dir = tempdir().unwrap();
+    let paths = three_files(dir.path());
+    // Unprivileged tests can only "give" files to their current owner, so this
+    // checks the order of operations and that modes come back, not that a
+    // real change of owner is undone.
+    let uid = fs::metadata(&paths[0]).unwrap().uid();
+    let changes = super::Changes {
+        mode: Some(0o644),
+        owner: Some((uid, "me".to_string())),
+    };
+    let mut log = Vec::new();
+    let mut failed = false;
+
+    let err = super::apply_changes(&paths, &changes, |path, op| {
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        log.push((name.clone(), op));
+        // The second file's first owner change fails before its mode is touched.
+        if name == "b" && op == Op::SetOwner(uid) && !failed {
+            failed = true;
+            return Err(std::io::Error::other("injected"));
+        }
+        super::apply_op(path, op)
+    })
+    .unwrap_err();
+
+    assert!(matches!(err, ExecutorError::UpdateFailed { .. }), "{err:?}");
+    let ops: Vec<_> = log.iter().map(|(n, op)| (n.as_str(), *op)).collect();
+    assert_eq!(
+        ops,
+        [
+            ("a", Op::SetOwner(uid)),
+            ("a", Op::SetMode(0o644)),
+            ("b", Op::SetOwner(uid)),
+            // Rollback, newest first: owner, then the mode it may clear.
+            ("b", Op::SetOwner(uid)),
+            ("b", Op::SetMode(0o600)),
+            ("a", Op::SetOwner(uid)),
+            ("a", Op::SetMode(0o600)),
+        ]
+    );
+    for path in &paths {
+        assert_eq!(mode_of(path), 0o600, "{}", path.display());
+    }
+}
+
+#[test]
+fn test_unknown_owner_fails_before_listing() {
+    let query = FileQuery::Update {
+        path: PathBuf::from("/definitely/missing/fmql"),
+        recursive: false,
+        updates: vec![FileAttributeUpdate {
+            attribute: FileAttribute::Owner,
+            value: "no-such-user-fmql".to_string(),
+        }],
+        condition: None,
+    };
+
+    let err = execute_query(&query).unwrap_err();
+
+    assert!(
+        matches!(err, ExecutorError::UnknownUser(ref name) if name == "no-such-user-fmql"),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn test_rollback_failure_message_covers_any_attribute() {
+    let err = ExecutorError::RollbackFailed {
+        path: PathBuf::from("b"),
+        source: std::io::Error::other("injected"),
+        unrestored: vec![PathBuf::from("a")],
+    };
+
+    assert_eq!(
+        err.to_string(),
+        "Failed to update b: injected; could not undo the changes to a"
+    );
 }

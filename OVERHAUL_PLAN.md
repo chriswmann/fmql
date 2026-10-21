@@ -23,7 +23,10 @@ The review below is historical; every numbered item is now resolved.
 - #12: a `mode` attribute holds the `ls -l` string, so permissions can be
   matched with `LIKE` and `REGEXP` (M2).
 
-Still out of scope: `GROUP BY`, and ownership and rename updates.
+- #13: `UPDATE ... SET owner = 'name'`, alone or with `permissions`; rollback
+  restores both owner and mode.
+
+Still out of scope: `GROUP BY` and rename updates.
 
 ## 1. Review summary
 

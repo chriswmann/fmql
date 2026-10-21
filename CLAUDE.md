@@ -51,7 +51,8 @@ temporary directories, including rejected updates that must not change files.
 ## Critical context before changing anything
 
 - `parse_sql` uses sqlparser tokens and expression parsing with `FileDialect`.
-  Its restricted statement grammar accepts `SELECT *` and permission updates,
+  Its restricted statement grammar accepts `SELECT` (`*` or named columns) and
+  `UPDATE` assignments to `permissions` and `owner`,
   and requires complete input consumption. Unsupported syntax must return an
   error, never an absent or weakened condition.
 - Both statements default to non-recursive traversal. `WITH RECURSIVE` enables
@@ -63,15 +64,17 @@ temporary directories, including rejected updates that must not change files.
   traversal visits entries by file name, so unordered output is deterministic.
   `SELECT a, b` projects columns; the executor still returns whole `FileResult`s
   and `output.rs` (`render_columns`, `columns_json`) applies the projection.
-  `GROUP BY`, `OFFSET`, select-list expressions and ownership/rename updates are rejected.
+  `GROUP BY`, `OFFSET`, select-list expressions and rename updates are rejected.
   The README documents the supported subset.
 - The executor compiles a condition into a private `Predicate` before listing
   files, checking attributes, operand types and patterns in every branch, so a
   hand-built `FileQuery` fails with an `ExecutorError` instead of matching
-  nothing. Update values are validated before any file changes. `apply_mode`
-  rolls back earlier permission changes when one fails (`UpdateFailed`), naming
-  any it cannot restore (`RollbackFailed`). It takes the setter as a closure so
-  tests can inject failures.
+  nothing. Update values are validated before any file changes. `Changes::plan`
+  validates assignments (resolving owner names); `apply_changes` applies each
+  file's `Op`s (owner, then mode) and, when one fails, restores every touched
+  file's owner then mode (`UpdateFailed`), naming any it cannot restore
+  (`RollbackFailed`). It takes the operation as a closure so tests can inject
+  failures; `apply_op` is the real one.
 - Updates skip symbolic links so they cannot change files outside the queried
   directory. Listing reads metadata through links, falling back to the link itself.
 - `OVERHAUL_PLAN.md` retains the original review as history.

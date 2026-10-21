@@ -72,7 +72,11 @@ FMQL understands these SQL-ish commands:
   entries are listed by name. `ORDER BY` accepts any filter attribute; nulls sort
   last in ascending order and first in descending order. `LIMIT` applies after
   sorting.
-- `UPDATE path SET permissions = '755' [WHERE condition]`: Change permissions.
+- `UPDATE path SET permissions = '755', owner = 'alice' [WHERE condition]`: Change
+  permissions, ownership or both. Each attribute may be assigned once. The owner
+  is a user name, looked up before any file changes; giving a file to another
+  user normally needs root. Ownership changes first, because `chown` can clear
+  setuid and setgid bits that the new permissions might set.
 - `WHERE`: Comparisons (`=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`), `AND`, `OR`,
   `NOT`, parentheses, `[NOT] BETWEEN`, `[NOT] LIKE`, `ILIKE`, and
   `REGEXP(attribute, 'pattern')` or `attribute [NOT] REGEXP 'pattern'`.
@@ -111,11 +115,12 @@ embedded apostrophe. SQL comments and one optional trailing semicolon are allowe
 The parser uses `sqlparser` for tokens and expressions and requires the whole
 query to be understood before execution. Unsupported queries return an error:
 this includes expressions or aliases in the select list, grouping, `OFFSET`, joins,
-subqueries, multiple statements and ownership/rename updates.
+subqueries, multiple statements and rename updates.
 Malformed predicates, incompatible literal types and invalid regexes are also
-rejected, including on empty directories. If changing one file's permissions
-fails, the files already changed get their previous permissions back and the
-error says so; if a restore also fails, the error names the files left changed.
+rejected, including on empty directories. If changing one file's owner or
+permissions fails, the files already changed get their previous owner and
+permissions back and the error says so; if a restore also fails, the error
+names the files left changed.
 
 Symbolic links are listed but never followed into, and their attributes describe
 the target (or the link itself when the target is missing). Updates skip

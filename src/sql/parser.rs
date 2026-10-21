@@ -2,7 +2,7 @@
 //!
 //! Supports `SELECT * | attribute, ... FROM path [WHERE condition] [ORDER BY attribute
 //! [ASC|DESC], ...] [LIMIT n]` and
-//! `UPDATE path SET permissions = '640' [WHERE condition]`.
+//! `UPDATE path SET permissions = '640', owner = 'name' [WHERE condition]`.
 //! Prefix either with `WITH RECURSIVE` to include descendants. Double-quote
 //! paths containing spaces or SQL punctuation. Single-quote string literals,
 //! doubling quotes for embedded apostrophes.
@@ -51,6 +51,8 @@ pub enum ParserError {
     },
     #[error("Invalid regular expression: {0}")]
     InvalidRegex(#[from] regex::Error),
+    #[error("Attribute assigned more than once: {0}")]
+    DuplicateAssignment(String),
     #[error("Column selected more than once: {0}")]
     DuplicateColumn(String),
     #[error("LIMIT {0} is too large")]
@@ -218,18 +220,35 @@ fn parse_order_by(parser: &mut Parser<'_>) -> Result<Vec<OrderBy>> {
 
 fn parse_updates(parser: &mut Parser<'_>) -> Result<Vec<FileAttributeUpdate>> {
     parser.expect_keyword(Keyword::SET)?;
-    let attribute = parser.parse_identifier()?;
-    if !attribute.value.eq_ignore_ascii_case("permissions") {
-        return Err(ParserError::UnsupportedAttribute(attribute.value));
+    let mut updates: Vec<FileAttributeUpdate> = Vec::new();
+    loop {
+        let name = parser.parse_identifier()?;
+        let attribute = match name.value.to_ascii_lowercase().as_str() {
+            "permissions" => FileAttribute::Permissions,
+            "owner" => FileAttribute::Owner,
+            _ => return Err(ParserError::UnsupportedAttribute(name.value)),
+        };
+        if updates.iter().any(|update| update.attribute == attribute) {
+            return Err(ParserError::DuplicateAssignment(
+                attribute.name().to_owned(),
+            ));
+        }
+        parser.expect_token(&Token::Eq)?;
+        let expr = parser.parse_expr()?;
+        let value = match attribute {
+            FileAttribute::Permissions => format!("{:o}", octal_mode(&expr)?),
+            // The executor resolves the name, so an unknown user fails before
+            // any file changes.
+            _ => match string_literal(&expr) {
+                Ok(name) if !name.is_empty() => name,
+                _ => return Err(invalid_value(&attribute, &expr)),
+            },
+        };
+        updates.push(FileAttributeUpdate { attribute, value });
+        if !parser.consume_token(&Token::Comma) {
+            return Ok(updates);
+        }
     }
-    parser.expect_token(&Token::Eq)?;
-    let mode = octal_mode(&parser.parse_expr()?)?;
-    // Only one writable attribute exists. Additional assignments remain
-    // unconsumed and are rejected by the complete-query check.
-    Ok(vec![FileAttributeUpdate {
-        attribute: FileAttribute::Permissions,
-        value: format!("{mode:o}"),
-    }])
 }
 
 /// Read a permission literal as octal digits, as `chmod` does. Filters and

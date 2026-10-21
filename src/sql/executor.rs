@@ -43,6 +43,10 @@ pub enum ExecutorError {
     #[error("Type error: {0}")]
     TypeError(String),
 
+    /// An owner named in an update is not in the user database.
+    #[error("Unknown user: {0}")]
+    UnknownUser(String),
+
     /// An update failed part way; every earlier change was undone.
     #[error("Failed to update {}: {source}; earlier changes were rolled back", path.display())]
     UpdateFailed {
@@ -52,9 +56,10 @@ pub enum ExecutorError {
         source: std::io::Error,
     },
 
-    /// An update failed part way and some earlier changes could not be undone.
+    /// An update failed part way and some earlier changes, to owner or
+    /// permissions, could not be undone.
     #[error(
-        "Failed to update {}: {source}; could not restore the previous permissions of {}",
+        "Failed to update {}: {source}; could not undo the changes to {}",
         path.display(),
         display_paths(unrestored)
     )]
@@ -219,100 +224,179 @@ fn execute_update(
     updates: &[FileAttributeUpdate],
     condition: Option<&FileCondition>,
 ) -> Result<Vec<FileResult>> {
-    update_with(path, recursive, updates, condition, |path, mode| {
-        fs::set_permissions(path, Permissions::from_mode(mode))
-    })
+    update_with(path, recursive, updates, condition, apply_op)
 }
 
-/// [`execute_update`] with the permission setter supplied, so tests can make
-/// a change fail part way through a real query.
+/// [`execute_update`] with the filesystem operation supplied, so tests can
+/// make a change fail part way through a real query.
 fn update_with(
     path: &Path,
     recursive: bool,
     updates: &[FileAttributeUpdate],
     condition: Option<&FileCondition>,
-    set_mode: impl FnMut(&Path, u32) -> std::io::Result<()>,
+    apply: impl FnMut(&Path, Op) -> std::io::Result<()>,
 ) -> Result<Vec<FileResult>> {
-    let modes = updates
-        .iter()
-        .map(permission_mode)
-        .collect::<Result<Vec<_>>>()?;
+    let changes = Changes::plan(updates)?;
     let predicate = condition.map(Predicate::compile).transpose()?;
-    // Later assignments win, so only the last mode needs applying.
-    let Some(&mode) = modes.last() else {
+    if changes.is_empty() {
         return Ok(Vec::new());
-    };
+    }
 
     let mut targets: Vec<FileResult> = matching_files(path, recursive, predicate.as_ref())?
         .into_iter()
-        // Setting permissions acts on a link's target, which may lie outside
-        // the queried directory, so links are never updated.
+        // Changing permissions or ownership acts on a link's target, which may
+        // lie outside the queried directory, so links are never updated.
         .filter(|file| !file.is_symlink)
         .collect();
     let paths: Vec<PathBuf> = targets.iter().map(|file| file.path.clone()).collect();
-    apply_mode(&paths, mode, set_mode)?;
+    apply_changes(&paths, &changes, apply)?;
 
-    // Only the permission bits changed. Updating the listed results, rather
-    // than re-reading metadata, means a successful update cannot then fail.
+    // Update the listed results rather than re-reading metadata, so a
+    // successful update cannot then fail.
     for file in &mut targets {
-        file.permissions = (file.permissions & !0o7777) | mode;
+        if let Some((_, name)) = &changes.owner {
+            file.owner = Some(name.clone());
+            // A change of owner can clear the setuid and setgid bits.
+            if let Ok(metadata) = fs::metadata(&file.path) {
+                file.permissions = metadata.permissions().mode();
+            }
+        }
+        if let Some(mode) = changes.mode {
+            file.permissions = (file.permissions & !0o7777) | mode;
+        }
     }
     Ok(targets)
 }
 
-/// Sets `mode` on every path, or on none of them: if a change fails, the paths
-/// already changed get their previous permission bits back, newest first.
-fn apply_mode(
-    paths: &[PathBuf],
-    mode: u32,
-    mut set_mode: impl FnMut(&Path, u32) -> std::io::Result<()>,
-) -> Result<()> {
-    let mut changed: Vec<(&Path, u32)> = Vec::new();
-    for path in paths {
-        let previous = fs::metadata(path).map(|m| m.permissions().mode() & 0o7777);
-        match previous.and_then(|previous| set_mode(path, mode).map(|()| previous)) {
-            Ok(previous) => changed.push((path, previous)),
-            Err(source) => {
-                let unrestored: Vec<PathBuf> = changed
-                    .iter()
-                    .rev()
-                    .filter(|(path, previous)| set_mode(path, *previous).is_err())
-                    .map(|(path, _)| path.to_path_buf())
-                    .collect();
-                let path = path.clone();
-                return Err(if unrestored.is_empty() {
-                    ExecutorError::UpdateFailed { path, source }
-                } else {
-                    ExecutorError::RollbackFailed {
-                        path,
-                        source,
-                        unrestored,
-                    }
-                });
+/// One filesystem change made by an update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Op {
+    /// Set the permission bits.
+    SetMode(u32),
+    /// Set the owning uid, leaving the group alone.
+    SetOwner(u32),
+}
+
+/// Applies an [`Op`] to the real filesystem.
+fn apply_op(path: &Path, op: Op) -> std::io::Result<()> {
+    match op {
+        Op::SetMode(mode) => fs::set_permissions(path, Permissions::from_mode(mode)),
+        Op::SetOwner(uid) => std::os::unix::fs::chown(path, Some(uid), None),
+    }
+}
+
+/// The validated effect of an update's assignments. Later assignments to the
+/// same attribute win.
+#[derive(Debug, Default)]
+struct Changes {
+    mode: Option<u32>,
+    owner: Option<(u32, String)>,
+}
+
+impl Changes {
+    fn plan(updates: &[FileAttributeUpdate]) -> Result<Self> {
+        let mut changes = Self::default();
+        for update in updates {
+            match update.attribute {
+                FileAttribute::Permissions => changes.mode = Some(permission_mode(&update.value)?),
+                FileAttribute::Owner => {
+                    let user = User::from_name(&update.value)
+                        .ok()
+                        .flatten()
+                        .ok_or_else(|| ExecutorError::UnknownUser(update.value.clone()))?;
+                    changes.owner = Some((user.uid.as_raw(), user.name));
+                }
+                _ => {
+                    return Err(ExecutorError::UnsupportedAttribute(format!(
+                        "Cannot update attribute: {:?}",
+                        update.attribute
+                    )));
+                }
             }
+        }
+        Ok(changes)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.mode.is_none() && self.owner.is_none()
+    }
+
+    /// The operations for one file. Ownership goes first because `chown` can
+    /// clear the setuid and setgid bits that a new mode might set.
+    fn ops(&self) -> impl Iterator<Item = Op> {
+        self.owner
+            .iter()
+            .map(|(uid, _)| Op::SetOwner(*uid))
+            .chain(self.mode.map(Op::SetMode))
+    }
+}
+
+/// A file's owner and permission bits before an update touched it.
+struct Saved<'a> {
+    path: &'a Path,
+    uid: u32,
+    mode: u32,
+}
+
+/// Applies `changes` to every path, or to none of them: if a change fails,
+/// every file touched so far, including the one that failed, gets its previous
+/// owner and permission bits back, newest first.
+fn apply_changes(
+    paths: &[PathBuf],
+    changes: &Changes,
+    mut apply: impl FnMut(&Path, Op) -> std::io::Result<()>,
+) -> Result<()> {
+    let mut saved: Vec<Saved<'_>> = Vec::new();
+    for path in paths {
+        let outcome = fs::metadata(path).and_then(|metadata| {
+            saved.push(Saved {
+                path,
+                uid: metadata.uid(),
+                mode: metadata.permissions().mode() & 0o7777,
+            });
+            changes.ops().try_for_each(|op| apply(path, op))
+        });
+        if let Err(source) = outcome {
+            let unrestored: Vec<PathBuf> = saved
+                .iter()
+                .rev()
+                .filter(|before| restore(before, changes, &mut apply).is_err())
+                .map(|before| before.path.to_path_buf())
+                .collect();
+            let path = path.clone();
+            return Err(if unrestored.is_empty() {
+                ExecutorError::UpdateFailed { path, source }
+            } else {
+                ExecutorError::RollbackFailed {
+                    path,
+                    source,
+                    unrestored,
+                }
+            });
         }
     }
     Ok(())
 }
 
-/// Reads the octal mode an update sets, rejecting attributes that cannot be
-/// written.
-fn permission_mode(update: &FileAttributeUpdate) -> Result<u32> {
-    match update.attribute {
-        FileAttribute::Permissions => u32::from_str_radix(&update.value, 8)
-            .ok()
-            .filter(|mode| *mode <= 0o7777)
-            .ok_or_else(|| {
-                ExecutorError::TypeError(format!("Invalid permissions value: {}", update.value))
-            }),
-        FileAttribute::Owner => Err(ExecutorError::UnsupportedOperation(
-            "Changing file ownership is not implemented".to_string(),
-        )),
-        _ => Err(ExecutorError::UnsupportedAttribute(format!(
-            "Cannot update attribute: {:?}",
-            update.attribute
-        ))),
+/// Puts back a file's owner, then its permission bits, which restoring the
+/// owner may have cleared.
+fn restore(
+    before: &Saved<'_>,
+    changes: &Changes,
+    apply: &mut impl FnMut(&Path, Op) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    if changes.owner.is_some() {
+        apply(before.path, Op::SetOwner(before.uid))?;
     }
+    apply(before.path, Op::SetMode(before.mode))
+}
+
+/// Reads an octal mode from `0` to `7777`.
+fn permission_mode(value: &str) -> Result<u32> {
+    u32::from_str_radix(value, 8)
+        .ok()
+        .filter(|mode| *mode <= 0o7777)
+        .ok_or_else(|| ExecutorError::TypeError(format!("Invalid permissions value: {value}")))
 }
 
 /// Lists the entries under `path` that satisfy `predicate`.

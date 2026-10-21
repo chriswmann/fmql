@@ -322,9 +322,33 @@ fn test_parse_update() {
 fn test_parse_update_multiple_attributes() {
     let sql =
         "UPDATE ~/executables SET owner = 'admin', permissions = '755' WHERE extension = '.bin'";
+    let FileQuery::Update { updates, .. } = parse_sql(sql).unwrap() else {
+        panic!("Expected UPDATE query");
+    };
+    let assigned: Vec<_> = updates
+        .iter()
+        .map(|u| (u.attribute.clone(), u.value.as_str()))
+        .collect();
+    assert_eq!(
+        assigned,
+        [
+            (FileAttribute::Owner, "admin"),
+            (FileAttribute::Permissions, "755")
+        ]
+    );
+    for sql in [
+        "UPDATE . SET owner = 'a', owner = 'b'",
+        "UPDATE . SET owner = ''",
+        "UPDATE . SET owner = 1000",
+        "UPDATE . SET owner = name",
+        "UPDATE . SET size = 1",
+        "UPDATE . SET owner = 'a',",
+    ] {
+        assert!(parse_sql(sql).is_err(), "accepted {sql}");
+    }
     assert!(matches!(
-        parse_sql(sql),
-        Err(ParserError::UnsupportedAttribute(_))
+        parse_sql("UPDATE . SET permissions = 600, PERMISSIONS = 700"),
+        Err(ParserError::DuplicateAssignment(name)) if name == "permissions"
     ));
 }
 
