@@ -5,8 +5,7 @@ working tool. Written 2026-05-22 against commit `f5037c3` (v0.3.0).
 
 ## Progress as of 2026-10-21
 
-The review below is historical. Every numbered item is resolved except M2,
-which is deferred (see the end of this section).
+The review below is historical; every numbered item is now resolved.
 
 - 2026-10-12 (#1): the stub parser was replaced with sqlparser tokenisation and
   expression parsing behind a restricted grammar (C1-C3, H1-H3, H5, M5, M6).
@@ -21,8 +20,10 @@ which is deferred (see the end of this section).
 - #9: a permission update that fails part way rolls back earlier changes.
 - #10: `Cargo.lock` is committed and CI builds with `--locked`.
 
-Still out of scope: `GROUP BY`, ownership and rename updates, and an rwx-string
-form of `permissions` for `LIKE` (M2; numeric octal comparison is documented instead).
+- #12: a `mode` attribute holds the `ls -l` string, so permissions can be
+  matched with `LIKE` and `REGEXP` (M2).
+
+Still out of scope: `GROUP BY`, and ownership and rename updates.
 
 ## 1. Review summary
 

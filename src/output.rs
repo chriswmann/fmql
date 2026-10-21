@@ -45,10 +45,7 @@ pub fn render_text(results: &[FileResult]) -> String {
         .unwrap_or(0);
     let mut out = String::new();
     for file in results {
-        let mut mode = mode_string(file.permissions, file.is_directory);
-        if file.is_symlink {
-            mode.replace_range(..1, "l");
-        }
+        let mode = ls_mode(file);
         let _ = writeln!(
             out,
             "{mode}  {:>size_width$}  {}  {}",
@@ -164,6 +161,7 @@ fn cell(file: &FileResult, attribute: &FileAttribute) -> String {
         FileAttribute::Accessed => time(file.accessed),
         FileAttribute::IsDirectory => file.is_directory.to_string(),
         FileAttribute::IsSymlink => file.is_symlink.to_string(),
+        FileAttribute::Mode => ls_mode(file),
         FileAttribute::IsExecutable => (file.permissions & 0o100 != 0).to_string(),
         FileAttribute::All => render_text(std::slice::from_ref(file))
             .trim_end()
@@ -185,16 +183,42 @@ fn json_value(file: &FileResult, attribute: &FileAttribute) -> Value {
         FileAttribute::Accessed => time(file.accessed),
         FileAttribute::IsDirectory => file.is_directory.into(),
         FileAttribute::IsSymlink => file.is_symlink.into(),
+        FileAttribute::Mode => ls_mode(file).into(),
         FileAttribute::IsExecutable => (file.permissions & 0o100 != 0).into(),
         FileAttribute::All => serde_json::to_value(file).unwrap_or(Value::Null),
     }
 }
 
+/// The entry's type and permissions as `ls -l` shows them. A symbolic link
+/// shows `l` as its type, with its target's permissions.
+#[must_use]
+pub fn ls_mode(file: &FileResult) -> String {
+    let mut mode = mode_string(file.permissions, file.is_directory);
+    if file.is_symlink {
+        mode.replace_range(..1, "l");
+    }
+    mode
+}
+
 /// Formats a mode as `ls` does, for example `drwxr-x---` or `-rwsr-xr-x`.
+///
+/// The type letter comes from the mode's file-type bits: `d`, `l`, `p` (FIFO),
+/// `s` (socket), `c` and `b` (character and block devices) or `-`. A mode
+/// holding only permission bits falls back to `is_directory`.
 #[must_use]
 pub fn mode_string(mode: u32, is_directory: bool) -> String {
     let mut out = String::with_capacity(10);
-    out.push(if is_directory { 'd' } else { '-' });
+    out.push(match mode & 0o170_000 {
+        0o040_000 => 'd',
+        0o120_000 => 'l',
+        0o010_000 => 'p',
+        0o140_000 => 's',
+        0o020_000 => 'c',
+        0o060_000 => 'b',
+        0o100_000 => '-',
+        _ if is_directory => 'd',
+        _ => '-',
+    });
     // Each class has its read, write and execute bits, plus the special bit
     // (setuid, setgid, sticky) shown in the execute position.
     for (shift, special, set_char) in [(6, 0o4000, 's'), (3, 0o2000, 's'), (0, 0o1000, 't')] {
@@ -220,6 +244,16 @@ mod tests {
         assert_eq!(mode_string(0o644, false), "-rw-r--r--");
         assert_eq!(mode_string(0o40755, true), "drwxr-xr-x");
         assert_eq!(mode_string(0, false), "----------");
+    }
+
+    #[test]
+    fn type_bits_choose_the_type_letter() {
+        assert_eq!(mode_string(0o100_644, true), "-rw-r--r--");
+        assert_eq!(mode_string(0o010_644, false), "prw-r--r--");
+        assert_eq!(mode_string(0o140_755, false), "srwxr-xr-x");
+        assert_eq!(mode_string(0o020_620, false), "crw--w----");
+        assert_eq!(mode_string(0o060_660, false), "brw-rw----");
+        assert_eq!(mode_string(0o120_777, false), "lrwxrwxrwx");
     }
 
     #[test]

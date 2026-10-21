@@ -450,7 +450,8 @@ fn attribute_kind(attribute: &FileAttribute) -> Result<Kind> {
         FileAttribute::Name
         | FileAttribute::Path
         | FileAttribute::Extension
-        | FileAttribute::Owner => Ok(Kind::Text),
+        | FileAttribute::Owner
+        | FileAttribute::Mode => Ok(Kind::Text),
         FileAttribute::Size | FileAttribute::Permissions => Ok(Kind::Number),
         FileAttribute::Modified | FileAttribute::Created | FileAttribute::Accessed => {
             Ok(Kind::Time)
@@ -665,6 +666,7 @@ fn attribute_value(file: &FileResult, attribute: &FileAttribute) -> FileValue {
         FileAttribute::Created => file.created.map_or(FileValue::Null, FileValue::DateTime),
         FileAttribute::Accessed => file.accessed.map_or(FileValue::Null, FileValue::DateTime),
         FileAttribute::IsSymlink => FileValue::Boolean(file.is_symlink),
+        FileAttribute::Mode => FileValue::String(crate::output::ls_mode(file)),
         FileAttribute::All => unreachable!("compile rejects {attribute:?}"),
     }
 }
