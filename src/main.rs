@@ -2,14 +2,17 @@
 //!
 //! This crate provides a command-line tool for managing files using a SQL-like query language.
 
-use std::process::ExitCode;
+use std::ffi::OsString;
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command as Process, ExitCode};
 
 use clap::{Parser, Subcommand, ValueEnum};
 
 use fmql::FMQLError;
 use fmql::output::{columns_json, render_columns, render_table, render_text, table_json};
 use fmql::sql::ast::{FileAttribute, FileQuery};
-use fmql::sql::{execute_grouped, execute_query, parse_sql};
+use fmql::sql::{execute_grouped, execute_query, parse_sql_with_home};
 
 /// Command-line arguments for the SQL mode
 #[derive(Parser, Debug)]
@@ -39,6 +42,21 @@ enum Format {
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
 struct AppArgs {
+    /// Rerun as root through sudo, or through PROGRAM, such as doas
+    #[arg(
+        long,
+        value_name = "PROGRAM",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "sudo"
+    )]
+    sudo: Option<String>,
+
+    /// The directory `~` expands to, or none if empty; --sudo passes on the
+    /// caller's home
+    #[arg(long, hide = true, require_equals = true)]
+    home: Option<OsString>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -51,9 +69,24 @@ enum Command {
 
 fn main() -> ExitCode {
     let AppArgs {
+        sudo,
+        home,
         command: Command::Sql(args),
     } = AppArgs::parse();
-    match run_sql_mode(&args) {
+    let home = match home {
+        // The caller had no home, so `~` must not find root's instead.
+        Some(home) if home.is_empty() => None,
+        Some(home) => Some(PathBuf::from(home)),
+        None => dirs::home_dir(),
+    };
+    if let Some(program) = sudo
+        && !nix::unistd::geteuid().is_root()
+    {
+        let err = rerun_as_root(&program, home.as_deref());
+        eprintln!("Could not run {program}: {err}");
+        return ExitCode::FAILURE;
+    }
+    match run_sql_mode(&args, home.as_deref()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("{err}");
@@ -62,9 +95,43 @@ fn main() -> ExitCode {
     }
 }
 
+/// Replaces this process with `program` running fmql with the same arguments,
+/// less `--sudo`, returning only if that fails. Root's environment usually
+/// names root's home, so the caller's home is passed on for `~`.
+fn rerun_as_root(program: &str, home: Option<&Path>) -> std::io::Error {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(err) => return err,
+    };
+    let mut process = Process::new(program);
+    process.arg(exe);
+    // Always passed, empty without a home, so the rerun never looks one up.
+    let mut flag = OsString::from("--home=");
+    flag.push(home.unwrap_or(Path::new("")));
+    process.arg(flag);
+    process.args(without_sudo(std::env::args_os().skip(1)));
+    process.exec()
+}
+
+/// Drops `--sudo` and `--home`, which [`rerun_as_root`] replaces, from the
+/// options before the subcommand, leaving the subcommand's arguments alone.
+/// Every option before the subcommand takes `=` for a value, so the first
+/// argument without a leading `-` is the subcommand.
+fn without_sudo(args: impl Iterator<Item = OsString>) -> Vec<OsString> {
+    let mut in_options = true;
+    args.filter(|arg| {
+        let bytes = arg.as_encoded_bytes();
+        in_options &= bytes.starts_with(b"-");
+        let replaced =
+            bytes == b"--sudo" || bytes.starts_with(b"--sudo=") || bytes.starts_with(b"--home=");
+        !(in_options && replaced)
+    })
+    .collect()
+}
+
 /// Run the application in SQL mode
-fn run_sql_mode(args: &SqlCommand) -> Result<(), Box<dyn std::error::Error>> {
-    let query = parse_sql(&args.query).map_err(FMQLError::from)?;
+fn run_sql_mode(args: &SqlCommand, home: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
+    let query = parse_sql_with_home(&args.query, home).map_err(FMQLError::from)?;
     if let FileQuery::Group { .. } = query {
         let table = execute_grouped(&query).map_err(FMQLError::from)?;
         match args.format {
@@ -91,3 +158,7 @@ fn run_sql_mode(args: &SqlCommand) -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "main_tests.rs"]
+mod tests;

@@ -11,7 +11,7 @@
 //! implements. sqlparser handles tokenisation and expressions, including
 //! precedence, parentheses, comments and escaping. Every token must be consumed.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use sqlparser::ast::{
@@ -70,6 +70,29 @@ pub type Result<T> = std::result::Result<T, ParserError>;
 /// Returns an error for malformed or unsupported SQL, unavailable attributes,
 /// incompatible literals, invalid patterns, or paths that cannot be expanded.
 pub fn parse_sql(sql: &str) -> Result<FileQuery> {
+    parse_sql_with_home(sql, dirs::home_dir().as_deref())
+}
+
+/// Parses like [`parse_sql`], expanding `~` to `home` rather than to the
+/// current user's home directory. A program rerun as another user, such as
+/// root under `sudo`, uses this to keep the home of whoever ran it.
+///
+/// # Errors
+/// Returns the errors [`parse_sql`] does, and an invalid path error when the
+/// query uses `~` but `home` is `None`.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// use fmql::sql::ast::FileQuery;
+/// use fmql::sql::parse_sql_with_home;
+///
+/// let query = parse_sql_with_home("SELECT * FROM ~/notes", Some(Path::new("/home/ada"))).unwrap();
+/// let FileQuery::Select { path, .. } = query else { panic!() };
+/// assert_eq!(path, Path::new("/home/ada/notes"));
+/// ```
+pub fn parse_sql_with_home(sql: &str, home: Option<&Path>) -> Result<FileQuery> {
     let dialect = FileDialect::default();
     let mut parser = Parser::new(&dialect).try_with_sql(sql)?;
     let recursive = parser.parse_keywords(&[Keyword::WITH, Keyword::RECURSIVE]);
@@ -82,7 +105,7 @@ pub fn parse_sql(sql: &str) -> Result<FileQuery> {
     } else if !parser.parse_keyword(Keyword::UPDATE) {
         return Err(ParserError::UnsupportedStatement(sql.to_owned()));
     }
-    let path = parse_path(&mut parser)?;
+    let path = parse_path(&mut parser, home)?;
     let updates = if select {
         Vec::new()
     } else {
@@ -217,7 +240,7 @@ fn select_query(parts: SelectParts) -> Result<FileQuery> {
     })
 }
 
-fn parse_path(parser: &mut Parser<'_>) -> Result<PathBuf> {
+fn parse_path(parser: &mut Parser<'_>, home: Option<&Path>) -> Result<PathBuf> {
     let first = parser.next_token();
     if first.token == Token::EOF {
         return Err(ParserError::MissingClause("directory path".to_owned()));
@@ -247,9 +270,9 @@ fn parse_path(parser: &mut Parser<'_>) -> Result<PathBuf> {
         return Err(ParserError::InvalidPath(path));
     }
     if path == "~" || path.starts_with("~/") {
-        let home = dirs::home_dir().ok_or_else(|| ParserError::InvalidPath(path.clone()))?;
+        let home = home.ok_or_else(|| ParserError::InvalidPath(path.clone()))?;
         return Ok(if path == "~" {
-            home
+            home.to_path_buf()
         } else {
             home.join(path[2..].trim_start_matches('/'))
         });

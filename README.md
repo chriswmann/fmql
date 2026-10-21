@@ -86,7 +86,7 @@ FMQL understands these SQL-ish commands:
 - `UPDATE path SET permissions = '755', owner = 'alice' [WHERE condition]`: Change
   permissions, ownership or both. Each attribute may be assigned once. The owner
   is a user name, looked up before any file changes; giving a file to another
-  user normally needs root. Ownership changes first, because `chown` can clear
+  user normally needs root (see [Running as root](#running-as-root)). Ownership changes first, because `chown` can clear
   setuid and setgid bits that the new permissions might set.
 - `UPDATE path SET name = expression [WHERE condition]`: Rename each matching
   entry within its own directory. The expression combines quoted strings,
@@ -189,6 +189,18 @@ drwxr-x---  4096  2026-09-14 18:40  /home/you/scripts/lib
 
 Errors go to standard error with exit code 1, so standard output only ever
 holds results.
+
+### Running as root
+
+`fmql --sudo sql "..."` reruns fmql through `sudo` with the same arguments, so
+only the one command runs as root and sudo asks for your password as usual.
+Name another program with `--sudo=doas` or `--sudo=run0`; it must take the
+command to run as its arguments. When fmql already runs as root, `--sudo` does
+nothing. `~` in the query still means your home directory, not root's.
+
+```bash
+fmql --sudo sql "WITH RECURSIVE UPDATE ~/shared SET owner = 'alice'"
+```
 
 ## 🤝 Contributing
 

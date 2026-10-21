@@ -778,3 +778,97 @@ fn cli_prints_grouped_rows_as_text_and_json() {
     }
     assert!(fmql::query(&sql).is_err());
 }
+
+/// Writes a stand-in for sudo that records its arguments and, like sudo,
+/// resets `HOME`, but runs the command as the same user.
+fn fake_sudo(dir: &Path) -> std::path::PathBuf {
+    let script = dir.join("fake-sudo");
+    let log = dir.join("args");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nHOME=/nonexistent exec \"$@\"\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    script
+}
+
+/// Runs fmql with `HOME` set, retrying while another test's process still
+/// holds the newly written script open.
+fn fmql_with_home(home: &Path, args: &[&str]) -> std::process::Output {
+    loop {
+        let output = Command::new(env!("CARGO_BIN_EXE_fmql"))
+            .env("HOME", home)
+            .args(args)
+            .output()
+            .unwrap();
+        if !String::from_utf8_lossy(&output.stderr).contains("Text file busy") {
+            return output;
+        }
+    }
+}
+
+#[test]
+fn cli_sudo_reruns_through_the_program_with_the_callers_home() {
+    if nix::unistd::geteuid().is_root() {
+        eprintln!("skipping: --sudo does nothing for root");
+        return;
+    }
+    let home = TempDir::new().unwrap();
+    fs::write(home.path().join("note.txt"), "").unwrap();
+    let tools = TempDir::new().unwrap();
+    let sudo = fake_sudo(tools.path());
+    let flag = format!("--sudo={}", sudo.display());
+
+    let output = fmql_with_home(home.path(), &[&flag, "sql", "SELECT name FROM ~"]);
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "note.txt\n");
+    let args = fs::read_to_string(tools.path().join("args")).unwrap();
+    assert_eq!(
+        args.lines().collect::<Vec<_>>(),
+        [
+            env!("CARGO_BIN_EXE_fmql"),
+            &format!("--home={}", home.path().display()),
+            "sql",
+            "SELECT name FROM ~",
+        ]
+    );
+}
+
+#[test]
+fn cli_sudo_reports_a_program_it_cannot_run() {
+    if nix::unistd::geteuid().is_root() {
+        eprintln!("skipping: --sudo does nothing for root");
+        return;
+    }
+    let output = fmql(&["--sudo=/nonexistent/sudo", "sql", "SELECT * FROM ."]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.starts_with("Could not run /nonexistent/sudo"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn cli_help_lists_sudo_but_not_the_internal_home_option() {
+    let help = String::from_utf8(fmql(&["--help"]).stdout).unwrap();
+    assert!(help.contains("--sudo[=<PROGRAM>]"), "{help}");
+    assert!(!help.contains("--home"), "{help}");
+}
+
+#[test]
+fn cli_empty_home_leaves_tilde_unexpanded() {
+    // --sudo passes an empty home when the caller has none, so root's home
+    // cannot stand in for it.
+    let output = fmql(&["--home=", "sql", "SELECT * FROM ~"]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains('~'), "{stderr}");
+}

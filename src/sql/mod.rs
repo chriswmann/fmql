@@ -63,4 +63,4 @@ pub mod parser;
 
 // Re-exports for convenience
 pub use executor::{execute_grouped, execute_query};
-pub use parser::parse_sql;
+pub use parser::{parse_sql, parse_sql_with_home};

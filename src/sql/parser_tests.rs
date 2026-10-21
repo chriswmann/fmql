@@ -2,7 +2,7 @@
 use crate::sql::ast::{
     ComparisonOperator, FileAttribute, FileCondition, FileQuery, FileValue, NameExpr, UpdateValue,
 };
-use crate::sql::parser::{ParserError, parse_sql};
+use crate::sql::parser::{ParserError, parse_sql, parse_sql_with_home};
 
 #[test]
 fn test_parse_select_all() {
@@ -673,4 +673,30 @@ fn malformed_grouping_is_rejected() {
         parse_sql("SELECT name, COUNT(*) FROM ."),
         Err(ParserError::UngroupedColumn(column)) if column == "name"
     ));
+}
+
+#[test]
+fn a_given_home_replaces_the_current_users_for_tilde() {
+    let home = std::path::Path::new("/home/ada");
+    for (sql, expected) in [
+        ("UPDATE ~ SET owner = 'ada'", home.to_path_buf()),
+        ("SELECT * FROM ~/notes", home.join("notes")),
+        ("SELECT * FROM /tmp", std::path::PathBuf::from("/tmp")),
+    ] {
+        let actual = match parse_sql_with_home(sql, Some(home)).unwrap() {
+            FileQuery::Select { path, .. }
+            | FileQuery::Update { path, .. }
+            | FileQuery::Group { path, .. } => path,
+        };
+        assert_eq!(actual, expected, "{sql}");
+    }
+}
+
+#[test]
+fn tilde_without_a_home_is_an_invalid_path() {
+    assert!(matches!(
+        parse_sql_with_home("SELECT * FROM ~/notes", None),
+        Err(ParserError::InvalidPath(path)) if path == "~/notes"
+    ));
+    assert!(parse_sql_with_home("SELECT * FROM .", None).is_ok());
 }
