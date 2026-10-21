@@ -301,9 +301,9 @@ fn test_type_mismatch_is_an_error_not_a_non_match() {
 fn test_unsupported_attribute_is_an_error() {
     let dir = setup_test_directory();
     let condition = FileCondition::Compare {
-        attribute: FileAttribute::Created,
-        operator: ComparisonOperator::Gt,
-        value: FileValue::String("2025-01-01".to_string()),
+        attribute: FileAttribute::All,
+        operator: ComparisonOperator::Eq,
+        value: FileValue::String("x".to_string()),
     };
 
     let err = execute_query(&select(dir.path(), condition)).unwrap_err();
@@ -445,22 +445,107 @@ fn test_ordering_a_boolean_is_unsupported() {
 }
 
 #[test]
-fn test_unknown_owner_equals_only_null() {
+fn test_null_compares_equal_only_to_null() {
     let dir = setup_test_directory();
-    let owner_is = |value| FileCondition::Compare {
+    let owner_is = |operator, value| FileCondition::Compare {
         attribute: FileAttribute::Owner,
-        operator: ComparisonOperator::Eq,
+        operator,
         value,
     };
 
-    let null = execute_query(&select(dir.path(), owner_is(FileValue::Null))).unwrap();
-    let named = execute_query(&select(
+    let null = execute_query(&select(
         dir.path(),
-        owner_is(FileValue::String("root".into())),
+        owner_is(ComparisonOperator::Eq, FileValue::Null),
+    ));
+    let not_null = execute_query(&select(
+        dir.path(),
+        owner_is(ComparisonOperator::NotEq, FileValue::Null),
     ));
 
-    assert_eq!(null.len(), 5);
-    assert!(named.unwrap().is_empty());
+    // The fixture's owner is null only if the user database lacks our uid.
+    let expected_nulls = if current_user().is_some() { 0 } else { 5 };
+    assert_eq!(null.unwrap().len(), expected_nulls);
+    assert_eq!(not_null.unwrap().len(), 5 - expected_nulls);
+}
+
+/// The current user's name, or `None` in containers whose uid has no entry.
+fn current_user() -> Option<String> {
+    nix::unistd::User::from_uid(nix::unistd::getuid())
+        .ok()
+        .flatten()
+        .map(|user| user.name)
+}
+
+#[test]
+#[cfg(unix)]
+fn test_owner_is_the_current_user() {
+    let Some(me) = current_user() else {
+        eprintln!("skipping: the current uid has no user database entry");
+        return;
+    };
+    let dir = setup_test_directory();
+    let condition = FileCondition::Compare {
+        attribute: FileAttribute::Owner,
+        operator: ComparisonOperator::Eq,
+        value: FileValue::String(me.clone()),
+    };
+
+    let results = execute_query(&select(dir.path(), condition)).unwrap();
+
+    assert_eq!(results.len(), 5);
+    assert!(
+        results
+            .iter()
+            .all(|f| f.owner.as_deref() == Some(me.as_str()))
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn test_is_symlink_describes_the_link_and_its_target() {
+    let dir = setup_test_directory();
+    std::os::unix::fs::symlink(dir.path().join("subdir"), dir.path().join("link")).unwrap();
+    std::os::unix::fs::symlink(dir.path().join("gone"), dir.path().join("dangling")).unwrap();
+    let condition = FileCondition::Compare {
+        attribute: FileAttribute::IsSymlink,
+        operator: ComparisonOperator::Eq,
+        value: FileValue::Boolean(true),
+    };
+
+    let mut links = execute_query(&select(dir.path(), condition)).unwrap();
+    links.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let summary: Vec<_> = links
+        .iter()
+        .map(|f| (f.name.as_str(), f.is_symlink, f.is_directory))
+        .collect();
+    assert_eq!(summary, [("dangling", true, false), ("link", true, true)]);
+}
+
+#[test]
+fn test_created_and_accessed_are_comparable_times() {
+    let dir = setup_test_directory();
+    for attribute in [FileAttribute::Created, FileAttribute::Accessed] {
+        let condition = FileCondition::Compare {
+            attribute: attribute.clone(),
+            operator: ComparisonOperator::Gt,
+            value: FileValue::String("2000-01-01".to_string()),
+        };
+
+        let results = execute_query(&select(dir.path(), condition)).unwrap();
+
+        // A filesystem without birth times yields nulls, which match nothing.
+        let known = execute_query(&select(
+            dir.path(),
+            FileCondition::Compare {
+                attribute,
+                operator: ComparisonOperator::NotEq,
+                value: FileValue::Null,
+            },
+        ))
+        .unwrap();
+        assert_eq!(results.len(), known.len());
+    }
 }
 
 #[test]

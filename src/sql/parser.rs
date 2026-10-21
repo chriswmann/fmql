@@ -282,6 +282,21 @@ fn convert_condition(expr: &Expr) -> Result<FileCondition> {
             ..
         } => Ok(negate(regexp(expr, pattern)?, *negated)),
         Expr::Function(function) => convert_function(function),
+        Expr::Identifier(_) => bare_boolean(expr),
+        _ => Err(unsupported(expr)),
+    }
+}
+
+/// A bare boolean attribute, as in `WHERE is_directory`, tests for true.
+fn bare_boolean(expr: &Expr) -> Result<FileCondition> {
+    match parse_attribute(expr)? {
+        attribute @ (FileAttribute::IsDirectory
+        | FileAttribute::IsExecutable
+        | FileAttribute::IsSymlink) => Ok(FileCondition::Compare {
+            attribute,
+            operator: ComparisonOperator::Eq,
+            value: FileValue::Boolean(true),
+        }),
         _ => Err(unsupported(expr)),
     }
 }
@@ -290,7 +305,10 @@ fn convert_condition(expr: &Expr) -> Result<FileCondition> {
 fn equality_only(attribute: &FileAttribute) -> bool {
     matches!(
         attribute,
-        FileAttribute::IsDirectory | FileAttribute::IsExecutable | FileAttribute::Permissions
+        FileAttribute::IsDirectory
+            | FileAttribute::IsExecutable
+            | FileAttribute::IsSymlink
+            | FileAttribute::Permissions
     )
 }
 
@@ -366,9 +384,13 @@ fn parse_attribute(expr: &Expr) -> Result<FileAttribute> {
         "size" => Ok(FileAttribute::Size),
         "extension" => Ok(FileAttribute::Extension),
         "modified" => Ok(FileAttribute::Modified),
+        "created" => Ok(FileAttribute::Created),
+        "accessed" => Ok(FileAttribute::Accessed),
         "permissions" => Ok(FileAttribute::Permissions),
+        "owner" => Ok(FileAttribute::Owner),
         "is_directory" => Ok(FileAttribute::IsDirectory),
         "is_executable" => Ok(FileAttribute::IsExecutable),
+        "is_symlink" => Ok(FileAttribute::IsSymlink),
         _ => Err(ParserError::UnsupportedAttribute(ident.value.clone())),
     }
 }
@@ -377,7 +399,7 @@ fn string_attribute(expr: &Expr) -> Result<FileAttribute> {
     let attribute = parse_attribute(expr)?;
     if matches!(
         attribute,
-        FileAttribute::Name | FileAttribute::Path | FileAttribute::Extension
+        FileAttribute::Name | FileAttribute::Path | FileAttribute::Extension | FileAttribute::Owner
     ) {
         Ok(attribute)
     } else {
@@ -399,12 +421,19 @@ fn parse_value(attribute: &FileAttribute, expr: &Expr) -> Result<FileValue> {
         FileAttribute::Name
         | FileAttribute::Path
         | FileAttribute::Extension
-        | FileAttribute::Modified => {
+        | FileAttribute::Owner
+        | FileAttribute::Modified
+        | FileAttribute::Created
+        | FileAttribute::Accessed => {
             let mut value = string_literal(expr)?;
             if *attribute == FileAttribute::Extension {
                 value = value.strip_prefix('.').unwrap_or(&value).to_owned();
             }
-            if *attribute == FileAttribute::Modified
+            let is_time = matches!(
+                attribute,
+                FileAttribute::Modified | FileAttribute::Created | FileAttribute::Accessed
+            );
+            if is_time
                 && value.parse::<DateTime<Utc>>().is_err()
                 && format!("{value}T00:00:00Z")
                     .parse::<DateTime<Utc>>()
@@ -436,7 +465,7 @@ fn parse_value(attribute: &FileAttribute, expr: &Expr) -> Result<FileValue> {
             }
             Err(invalid_value(attribute, expr))
         }
-        FileAttribute::IsDirectory | FileAttribute::IsExecutable => {
+        FileAttribute::IsDirectory | FileAttribute::IsExecutable | FileAttribute::IsSymlink => {
             if let Expr::Value(value) = expr
                 && let Value::Boolean(b) = value.value
             {
@@ -444,7 +473,7 @@ fn parse_value(attribute: &FileAttribute, expr: &Expr) -> Result<FileValue> {
             }
             Err(invalid_value(attribute, expr))
         }
-        _ => Err(ParserError::UnsupportedAttribute(format!("{attribute:?}"))),
+        FileAttribute::All => Err(ParserError::UnsupportedAttribute(format!("{attribute:?}"))),
     }
 }
 
