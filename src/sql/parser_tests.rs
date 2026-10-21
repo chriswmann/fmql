@@ -23,7 +23,7 @@ fn test_parse_select_all() {
             assert!(matches!(attributes[0], FileAttribute::All));
             assert!(condition.is_none());
         }
-        FileQuery::Update { .. } => panic!("Expected SELECT query"),
+        _ => panic!("Expected SELECT query"),
     }
 }
 
@@ -58,7 +58,7 @@ fn test_parse_select_with_condition() {
                 _ => panic!("Expected Compare condition"),
             }
         }
-        FileQuery::Update { .. } => panic!("Expected SELECT query"),
+        _ => panic!("Expected SELECT query"),
     }
 }
 
@@ -109,7 +109,7 @@ fn test_parse_select_with_complex_condition() {
                 _ => panic!("Expected AND condition"),
             }
         }
-        FileQuery::Update { .. } => panic!("Expected SELECT query"),
+        _ => panic!("Expected SELECT query"),
     }
 }
 
@@ -144,7 +144,7 @@ fn test_parse_select_with_between() {
                 _ => panic!("Expected BETWEEN condition"),
             }
         }
-        FileQuery::Update { .. } => panic!("Expected SELECT query"),
+        _ => panic!("Expected SELECT query"),
     }
 }
 
@@ -179,7 +179,7 @@ fn test_parse_select_with_like() {
                 _ => panic!("Expected LIKE condition"),
             }
         }
-        FileQuery::Update { .. } => panic!("Expected SELECT query"),
+        _ => panic!("Expected SELECT query"),
     }
 }
 
@@ -214,7 +214,7 @@ fn test_parse_select_with_like_pattern_variations() {
                 }
                 _ => panic!("Expected LIKE condition for SQL: {sql}"),
             },
-            FileQuery::Update { .. } => panic!("Expected SELECT query for SQL: {sql}"),
+            _ => panic!("Expected SELECT query for SQL: {sql}"),
         }
     }
 }
@@ -245,7 +245,7 @@ fn test_parse_select_with_regexp() {
                 _ => panic!("Expected REGEXP condition"),
             }
         }
-        FileQuery::Update { .. } => panic!("Expected SELECT query"),
+        _ => panic!("Expected SELECT query"),
     }
 }
 
@@ -280,7 +280,7 @@ fn test_parse_select_with_recursive() {
                 _ => panic!("Expected LIKE condition"),
             }
         }
-        FileQuery::Update { .. } => panic!("Expected SELECT query"),
+        _ => panic!("Expected SELECT query"),
     }
 }
 
@@ -316,7 +316,7 @@ fn test_parse_update() {
                 _ => panic!("Expected Compare condition"),
             }
         }
-        FileQuery::Select { .. } => panic!("Expected UPDATE query"),
+        _ => panic!("Expected UPDATE query"),
     }
 }
 
@@ -417,7 +417,9 @@ fn repeated_home_separators_never_discard_the_home_directory() {
         ] {
             let query = parse_sql(&sql).unwrap();
             let actual = match query {
-                FileQuery::Select { path, .. } | FileQuery::Update { path, .. } => path,
+                FileQuery::Select { path, .. }
+                | FileQuery::Update { path, .. }
+                | FileQuery::Group { path, .. } => path,
             };
             assert_eq!(actual, expected, "{sql}");
         }
@@ -587,4 +589,88 @@ fn name_assignments_parse_to_expressions() {
             "accepted {expr}"
         );
     }
+}
+
+#[test]
+fn aggregates_and_group_by_build_a_group_query() {
+    use crate::sql::ast::{AggregateFunction, Column, GroupOrder};
+
+    let FileQuery::Group {
+        columns,
+        group_by,
+        order_by,
+        limit,
+        ..
+    } = parse_sql(
+        "SELECT extension, COUNT(*), sum(size) FROM . GROUP BY extension \
+         ORDER BY COUNT(*) DESC, extension LIMIT 3",
+    )
+    .unwrap()
+    else {
+        panic!("expected GROUP query");
+    };
+    let count = Column::Aggregate {
+        function: AggregateFunction::Count,
+        attribute: None,
+    };
+    assert_eq!(
+        columns,
+        [
+            Column::Attribute(FileAttribute::Extension),
+            count.clone(),
+            Column::Aggregate {
+                function: AggregateFunction::Sum,
+                attribute: Some(FileAttribute::Size),
+            },
+        ]
+    );
+    assert_eq!(group_by, [FileAttribute::Extension]);
+    assert_eq!(
+        order_by,
+        [
+            GroupOrder {
+                column: count,
+                descending: true
+            },
+            GroupOrder {
+                column: Column::Attribute(FileAttribute::Extension),
+                descending: false
+            },
+        ]
+    );
+    assert_eq!(limit, Some(3));
+
+    // An aggregate alone groups every file together.
+    assert!(matches!(
+        parse_sql("SELECT MAX(modified) FROM .").unwrap(),
+        FileQuery::Group { ref group_by, .. } if group_by.is_empty()
+    ));
+}
+
+#[test]
+fn malformed_grouping_is_rejected() {
+    for sql in [
+        "SELECT * FROM . GROUP BY extension",
+        "SELECT name, COUNT(*) FROM .",
+        "SELECT name FROM . GROUP BY extension",
+        "SELECT extension FROM . GROUP BY extension ORDER BY name",
+        "SELECT name FROM . ORDER BY COUNT(*)",
+        "SELECT SUM(name) FROM .",
+        "SELECT AVG(permissions) FROM .",
+        "SELECT SUM(*) FROM .",
+        "SELECT COUNT(DISTINCT name) FROM .",
+        "SELECT COUNT(name, size) FROM .",
+        "SELECT MEDIAN(size) FROM .",
+        "SELECT COUNT(*), COUNT(*) FROM .",
+        "SELECT extension FROM . GROUP BY extension, extension",
+        "SELECT extension FROM . GROUP BY",
+        "SELECT COUNT(*) FROM . GROUP BY extension HAVING COUNT(*) > 1",
+        "UPDATE . SET permissions = '600' GROUP BY extension",
+    ] {
+        assert!(parse_sql(sql).is_err(), "accepted {sql}");
+    }
+    assert!(matches!(
+        parse_sql("SELECT name, COUNT(*) FROM ."),
+        Err(ParserError::UngroupedColumn(column)) if column == "name"
+    ));
 }

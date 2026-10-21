@@ -101,6 +101,114 @@ pub enum FileQuery {
         /// The conditions to filter files by (None means all files).
         condition: Option<FileCondition>,
     },
+
+    /// A query that summarises matching files, one row per group.
+    ///
+    /// # Examples
+    ///
+    /// This represents a query like:
+    /// ```sql
+    /// SELECT extension, COUNT(*), SUM(size) FROM . GROUP BY extension
+    /// ```
+    ///
+    /// Without `GROUP BY`, every matching file forms one group, so
+    /// `SELECT COUNT(*) FROM .` returns a single row even for an empty
+    /// directory.
+    Group {
+        /// The directory path to search in.
+        path: PathBuf,
+        /// Whether to search recursively through subdirectories.
+        recursive: bool,
+        /// The columns of each row. Every attribute column is also grouped by.
+        columns: Vec<Column>,
+        /// The conditions to filter files by before grouping.
+        condition: Option<FileCondition>,
+        /// The attributes that define a group.
+        group_by: Vec<FileAttribute>,
+        /// Sort keys for the rows, most significant first. Without any, rows
+        /// are in ascending order of their group values.
+        order_by: Vec<GroupOrder>,
+        /// The maximum number of rows to return, applied after sorting.
+        limit: Option<usize>,
+    },
+}
+
+/// A column of a grouped query: a grouped attribute or an aggregate.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Column {
+    /// The value of an attribute, which is the same for every file in a group.
+    Attribute(FileAttribute),
+    /// A value computed from every file in a group.
+    Aggregate {
+        /// The function to apply.
+        function: AggregateFunction,
+        /// The attribute it reads, or `None` for `COUNT(*)`.
+        attribute: Option<FileAttribute>,
+    },
+}
+
+impl Column {
+    /// The column's heading, such as `extension` or `sum(size)`.
+    ///
+    /// ```
+    /// use fmql::sql::ast::{AggregateFunction, Column, FileAttribute};
+    ///
+    /// let count = Column::Aggregate { function: AggregateFunction::Count, attribute: None };
+    /// assert_eq!(count.label(), "count(*)");
+    /// ```
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            Self::Attribute(attribute) => attribute.name().to_owned(),
+            Self::Aggregate {
+                function,
+                attribute,
+            } => format!(
+                "{}({})",
+                function.name(),
+                attribute.as_ref().map_or("*", FileAttribute::name)
+            ),
+        }
+    }
+}
+
+/// An aggregate function. Each ignores files whose value is null; `SUM`,
+/// `AVG`, `MIN` and `MAX` of a group with no values are null.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AggregateFunction {
+    /// `COUNT(*)` counts files; `COUNT(attribute)` counts non-null values.
+    Count,
+    /// The total of a numeric attribute.
+    Sum,
+    /// The mean of a numeric attribute.
+    Avg,
+    /// The smallest value.
+    Min,
+    /// The largest value.
+    Max,
+}
+
+impl AggregateFunction {
+    /// The function's name in lower case.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Count => "count",
+            Self::Sum => "sum",
+            Self::Avg => "avg",
+            Self::Min => "min",
+            Self::Max => "max",
+        }
+    }
+}
+
+/// A sort key for a grouped query.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GroupOrder {
+    /// The column to sort by; it need not be selected.
+    pub column: Column,
+    /// Whether larger values come first. Nulls sort as in [`OrderBy`].
+    pub descending: bool,
 }
 
 /// Represents a file attribute that can be queried or displayed.
@@ -403,7 +511,7 @@ impl std::fmt::Display for ComparisonOperator {
 /// let date_value = FileValue::DateTime(Utc::now());
 /// let bool_value = FileValue::Boolean(true);
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum FileValue {
     /// A string value.
     String(String),

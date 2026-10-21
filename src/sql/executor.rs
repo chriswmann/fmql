@@ -195,6 +195,9 @@ pub fn execute_query(query: &FileQuery) -> Result<Vec<FileResult>> {
             updates,
             condition,
         } => execute_update(path, *recursive, updates, condition.as_ref()),
+        FileQuery::Group { .. } => Err(ExecutorError::UnsupportedOperation(
+            "grouped queries are not executed yet".to_string(),
+        )),
     }
 }
 
