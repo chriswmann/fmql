@@ -63,7 +63,11 @@ fmql sql "UPDATE ~/scripts SET permissions = '755' WHERE extension = 'sh'"
 
 FMQL understands these SQL-ish commands:
 
-- `SELECT * FROM path [WHERE condition]`: Find matching files and directories.
+- `SELECT * FROM path [WHERE condition] [ORDER BY attribute [ASC|DESC], ...] [LIMIT n]`:
+  Find matching files and directories. Without `ORDER BY`, each directory's
+  entries are listed by name. `ORDER BY` accepts any filter attribute; nulls sort
+  last in ascending order and first in descending order. `LIMIT` applies after
+  sorting.
 - `UPDATE path SET permissions = '755' [WHERE condition]`: Change permissions.
 - `WHERE`: Comparisons (`=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`), `AND`, `OR`,
   `NOT`, parentheses, `[NOT] BETWEEN`, `[NOT] LIKE`, `ILIKE`, and
@@ -86,7 +90,8 @@ equality or inequality, or on their own as in `WHERE NOT is_symlink`).
 file's uid. Bare dates mean midnight UTC. Metadata the system cannot supply, such
 as a creation time on a filesystem that does not record one or an owner missing
 from the user database, is null: it fails every comparison except `!=`. Extension comparisons accept
-either `'rs'` or `'.rs'`. Permission filters and updates both read octal digits
+either `'rs'` or `'.rs'`; a file without one has the extension `''`, which
+both filters and `ORDER BY` treat as an ordinary (smallest) string. Permission filters and updates both read octal digits
 from `0000` to `7777`, quoted or bare, as `chmod` does. A filter compares the
 permission bits only, so `permissions = 644` matches a `rw-r--r--` file.
 
@@ -99,7 +104,7 @@ embedded apostrophe. SQL comments and one optional trailing semicolon are allowe
 
 The parser uses `sqlparser` for tokens and expressions and requires the whole
 query to be understood before execution. Unsupported queries return an error:
-this includes projections other than `*`, sorting, grouping, limits, joins,
+this includes projections other than `*`, grouping, `OFFSET`, joins,
 subqueries, multiple statements and ownership/rename updates.
 Malformed predicates, incompatible literal types and invalid regexes are also
 rejected, including on empty directories. Filesystem failures during an accepted

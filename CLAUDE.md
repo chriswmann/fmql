@@ -57,8 +57,10 @@ temporary directories, including rejected updates that must not change files.
 - The parser expands `~` and normalises a leading dot in extension comparison
   literals. It validates attributes, literal types, dates, regexes and octal
   permissions before execution, even for empty directories or unused branches.
-- `ORDER BY`, `GROUP BY`, projection, ownership/rename updates and unimplemented
-  metadata are rejected. The README documents the supported subset.
+- `SELECT` supports `ORDER BY` (stable sort, nulls last ascending) and `LIMIT`;
+  traversal visits entries by file name, so unordered output is deterministic.
+  `GROUP BY`, `OFFSET`, projection and ownership/rename updates are rejected.
+  The README documents the supported subset.
 - The executor compiles a condition into a private `Predicate` before listing
   files, checking attributes, operand types and patterns in every branch, so a
   hand-built `FileQuery` fails with an `ExecutorError` instead of matching

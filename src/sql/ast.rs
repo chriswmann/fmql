@@ -31,6 +31,8 @@
 //!         operator: ComparisonOperator::Gt,
 //!         value: FileValue::Number(1000000.0),
 //!     }),
+//!     order_by: Vec::new(),
+//!     limit: None,
 //! };
 //!
 //! // Now use the query with an executor...
@@ -72,6 +74,13 @@ pub enum FileQuery {
         attributes: Vec<FileAttribute>,
         /// The conditions to filter files by (None means all files).
         condition: Option<FileCondition>,
+        /// Sort keys, most significant first. Without any, entries are in
+        /// traversal order, which visits each directory's entries by name.
+        #[serde(default)]
+        order_by: Vec<OrderBy>,
+        /// The maximum number of entries to return, applied after sorting.
+        #[serde(default)]
+        limit: Option<usize>,
     },
 
     /// A query to update file attributes for files matching specific criteria.
@@ -140,6 +149,18 @@ pub enum FileAttribute {
     IsSymlink,
     /// Whether the file is executable.
     IsExecutable,
+}
+
+/// A sort key in an `ORDER BY` clause.
+///
+/// Nulls sort after every other value in ascending order and before them in
+/// descending order, as in PostgreSQL.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OrderBy {
+    /// The attribute to sort by.
+    pub attribute: FileAttribute,
+    /// Whether larger values come first.
+    pub descending: bool,
 }
 
 /// Represents an update operation for a file attribute.

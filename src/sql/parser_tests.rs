@@ -13,6 +13,7 @@ fn test_parse_select_all() {
             recursive,
             attributes,
             condition,
+            ..
         } => {
             assert!(path.ends_with("Documents"));
             assert!(!recursive);
@@ -35,6 +36,7 @@ fn test_parse_select_with_condition() {
             recursive,
             attributes,
             condition,
+            ..
         } => {
             assert!(path.ends_with("Documents"));
             assert!(!recursive);
@@ -69,6 +71,7 @@ fn test_parse_select_with_complex_condition() {
             recursive,
             attributes,
             condition,
+            ..
         } => {
             assert!(path.ends_with("Documents"));
             assert!(!recursive);
@@ -119,6 +122,7 @@ fn test_parse_select_with_between() {
             recursive,
             attributes,
             condition,
+            ..
         } => {
             assert!(path.ends_with("Documents"));
             assert!(!recursive);
@@ -153,6 +157,7 @@ fn test_parse_select_with_like() {
             recursive,
             attributes,
             condition,
+            ..
         } => {
             assert!(path.ends_with("Projects"));
             assert!(!recursive);
@@ -223,6 +228,7 @@ fn test_parse_select_with_regexp() {
             recursive,
             attributes,
             condition,
+            ..
         } => {
             assert!(path.ends_with("logs"));
             assert!(!recursive);
@@ -252,6 +258,7 @@ fn test_parse_select_with_recursive() {
             recursive,
             attributes,
             condition,
+            ..
         } => {
             assert!(path.ends_with("Projects"));
             assert!(recursive);
