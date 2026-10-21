@@ -141,6 +141,8 @@ pub enum FileAttribute {
     Accessed,
     /// The file permissions in octal format.
     Permissions,
+    /// The type and permissions as `ls -l` shows them, such as `drwxr-x---`.
+    Mode,
     /// The file owner username.
     Owner,
     /// Whether the file is a directory.
@@ -171,6 +173,7 @@ impl FileAttribute {
             Self::Created => "created",
             Self::Accessed => "accessed",
             Self::Permissions => "permissions",
+            Self::Mode => "mode",
             Self::Owner => "owner",
             Self::IsDirectory => "is_directory",
             Self::IsSymlink => "is_symlink",

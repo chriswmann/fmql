@@ -86,7 +86,9 @@ case-insensitive, while string comparisons and regular expressions are
 case-sensitive. LIKE uses `%` and `_` wildcards and has no `ESCAPE` support.
 
 Supported filter attributes are `name`, `path`, `extension`, `owner` (strings),
-`size` (bytes), `permissions` (octal digits such as `644`, with `=` or `!=` only),
+`mode` (the `ls -l` string such as `-rwxr-x---`, so `mode LIKE '___x%'` finds
+owner-executable entries), `size` (bytes), `permissions` (octal digits such as
+`644`, with `=` or `!=` only),
 `modified`, `created`, `accessed` (each a quoted `YYYY-MM-DD` or RFC 3339
 timestamp), and `is_directory`, `is_executable`, `is_symlink` (booleans, with
 equality or inequality, or on their own as in `WHERE NOT is_symlink`).

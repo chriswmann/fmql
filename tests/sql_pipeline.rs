@@ -607,3 +607,50 @@ fn cli_projects_selected_attributes_in_order() {
     assert_eq!(rows[2]["size"], 9);
     assert_eq!(rows[2]["permissions"], 0o100_640);
 }
+
+#[test]
+fn mode_matches_permissions_as_ls_shows_them() {
+    let dir = fixture();
+    fs::set_permissions(
+        dir.path().join("alpha.rs"),
+        fs::Permissions::from_mode(0o750),
+    )
+    .unwrap();
+    fs::set_permissions(dir.path().join("nested"), fs::Permissions::from_mode(0o755)).unwrap();
+    std::os::unix::fs::symlink(dir.path().join("beta.txt"), dir.path().join("link")).unwrap();
+
+    assert_eq!(
+        names(dir.path(), "", "mode = '-rw-r-----'"),
+        ["beta.txt", "it's.txt"]
+    );
+    assert_eq!(
+        names(dir.path(), "", "mode LIKE '___x%'"),
+        ["alpha.rs", "nested"]
+    );
+    assert_eq!(names(dir.path(), "", "mode LIKE 'd%'"), ["nested"]);
+    assert_eq!(names(dir.path(), "", "mode LIKE 'l%'"), ["link"]);
+    assert_eq!(
+        names(dir.path(), "", "mode REGEXP '^-.{6}r'"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        names(dir.path(), "", "NOT mode REGEXP 'x' AND NOT is_symlink"),
+        ["beta.txt", "it's.txt"]
+    );
+
+    let sql = format!(
+        "SELECT mode, name FROM {} WHERE name = 'alpha.rs'",
+        dir.path().display()
+    );
+    let output = fmql(&["sql", &sql]);
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "-rwxr-x---  alpha.rs\n"
+    );
+    assert!(parse_sql("SELECT * FROM . WHERE mode = 640").is_err());
+
+    // A socket is not a regular file, so `-%` must not select it.
+    let _socket = std::os::unix::net::UnixListener::bind(dir.path().join("sock")).unwrap();
+    assert_eq!(names(dir.path(), "", "mode LIKE 's%'"), ["sock"]);
+    assert!(!names(dir.path(), "", "mode LIKE '-%'").contains(&"sock".to_string()));
+}

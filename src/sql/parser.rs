@@ -442,6 +442,7 @@ fn parse_attribute(expr: &Expr) -> Result<FileAttribute> {
         "created" => Ok(FileAttribute::Created),
         "accessed" => Ok(FileAttribute::Accessed),
         "permissions" => Ok(FileAttribute::Permissions),
+        "mode" => Ok(FileAttribute::Mode),
         "owner" => Ok(FileAttribute::Owner),
         "is_directory" => Ok(FileAttribute::IsDirectory),
         "is_executable" => Ok(FileAttribute::IsExecutable),
@@ -454,7 +455,11 @@ fn string_attribute(expr: &Expr) -> Result<FileAttribute> {
     let attribute = parse_attribute(expr)?;
     if matches!(
         attribute,
-        FileAttribute::Name | FileAttribute::Path | FileAttribute::Extension | FileAttribute::Owner
+        FileAttribute::Name
+            | FileAttribute::Path
+            | FileAttribute::Extension
+            | FileAttribute::Owner
+            | FileAttribute::Mode
     ) {
         Ok(attribute)
     } else {
@@ -477,6 +482,7 @@ fn parse_value(attribute: &FileAttribute, expr: &Expr) -> Result<FileValue> {
         | FileAttribute::Path
         | FileAttribute::Extension
         | FileAttribute::Owner
+        | FileAttribute::Mode
         | FileAttribute::Modified
         | FileAttribute::Created
         | FileAttribute::Accessed => {
