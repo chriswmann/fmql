@@ -29,7 +29,9 @@ The review below is historical; every numbered item is now resolved.
 - #14: `UPDATE ... SET name = expression` renames entries in place, with
   validation, conflict checks and rollback.
 
-Still out of scope: `GROUP BY`.
+- #15: `GROUP BY` with `COUNT`, `SUM`, `AVG`, `MIN` and `MAX`, returning rows.
+
+Nothing from the review or the deferred list remains open.
 
 ## 1. Review summary
 

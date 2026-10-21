@@ -7,9 +7,9 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use fmql::FMQLError;
-use fmql::output::{columns_json, render_columns, render_text};
+use fmql::output::{columns_json, render_columns, render_table, render_text, table_json};
 use fmql::sql::ast::{FileAttribute, FileQuery};
-use fmql::sql::{execute_query, parse_sql};
+use fmql::sql::{execute_grouped, execute_query, parse_sql};
 
 /// Command-line arguments for the SQL mode
 #[derive(Parser, Debug)]
@@ -65,6 +65,14 @@ fn main() -> ExitCode {
 /// Run the application in SQL mode
 fn run_sql_mode(args: &SqlCommand) -> Result<(), Box<dyn std::error::Error>> {
     let query = parse_sql(&args.query).map_err(FMQLError::from)?;
+    if let FileQuery::Group { .. } = query {
+        let table = execute_grouped(&query).map_err(FMQLError::from)?;
+        match args.format {
+            Format::Json => println!("{}", serde_json::to_string_pretty(&table_json(&table))?),
+            Format::Text => print!("{}", render_table(&table)),
+        }
+        return Ok(());
+    }
     let results = execute_query(&query).map_err(FMQLError::from)?;
     let columns = match &query {
         FileQuery::Select { attributes, .. } if attributes != &[FileAttribute::All] => {

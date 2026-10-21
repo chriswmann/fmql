@@ -64,7 +64,9 @@ temporary directories, including rejected updates that must not change files.
   traversal visits entries by file name, so unordered output is deterministic.
   `SELECT a, b` projects columns; the executor still returns whole `FileResult`s
   and `output.rs` (`render_columns`, `columns_json`) applies the projection.
-  `GROUP BY`, `OFFSET` and select-list expressions are rejected.
+  `GROUP BY` or an aggregate in the select list makes `FileQuery::Group`, executed
+  by `execute_grouped` (`src/sql/executor/group.rs`) into a `Table`, not files;
+  `fmql::run` returns either. `HAVING`, `OFFSET` and select-list expressions are rejected.
   The README documents the supported subset.
 - The executor compiles a condition into a private `Predicate` before listing
   files, checking attributes, operand types and patterns in every branch, so a
