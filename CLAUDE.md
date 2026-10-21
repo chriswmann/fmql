@@ -57,9 +57,11 @@ temporary directories, including rejected updates that must not change files.
   permissions before execution, even for empty directories or unused branches.
 - `ORDER BY`, `GROUP BY`, projection, ownership/rename updates and unimplemented
   metadata are rejected. The README documents the supported subset.
-- The public executor still discards evaluation errors in its filter. Callers
-  constructing `FileQuery` directly bypass parser validation. Accepted updates
-  can partially apply if a later filesystem operation fails; they are not atomic.
+- The executor compiles a condition into a private `Predicate` before listing
+  files, checking attributes, operand types and patterns in every branch, so a
+  hand-built `FileQuery` fails with an `ExecutorError` instead of matching
+  nothing. Update values are validated before any file changes. Accepted updates
+  can still partially apply if a later filesystem operation fails.
 - Updates skip symbolic links so they cannot change files outside the queried
   directory. Listing reads metadata through links, falling back to the link itself.
 - `FMQLError` remains unused by the binary. `OVERHAUL_PLAN.md` retains the original review as history.

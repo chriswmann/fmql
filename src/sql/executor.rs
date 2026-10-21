@@ -4,7 +4,7 @@
 //! on the file system, such as querying files or updating file attributes.
 
 use chrono::{DateTime, Utc};
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use serde::Serialize;
 use std::fs::{self, Permissions};
 use std::os::unix::fs::PermissionsExt;
@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 use walkdir::WalkDir;
 
-use crate::sql::ast::{ComparisonOperator, FileAttribute, FileCondition, FileQuery, FileValue};
+use crate::sql::ast::{
+    ComparisonOperator, FileAttribute, FileAttributeUpdate, FileCondition, FileQuery, FileValue,
+};
 
 /// Errors that can occur during query execution.
 #[derive(Error, Debug)]
@@ -120,84 +122,83 @@ fn execute_select(
     _attributes: &[FileAttribute],
     condition: Option<&FileCondition>,
 ) -> Result<Vec<FileResult>> {
-    let files = list_files(path, recursive)?;
-    let filtered_files = if let Some(cond) = condition {
-        files
-            .into_iter()
-            .filter(|file| evaluate_condition(file, cond).unwrap_or(false))
-            .collect()
-    } else {
-        files
-    };
-
-    Ok(filtered_files)
+    let predicate = condition.map(Predicate::compile).transpose()?;
+    matching_files(path, recursive, predicate.as_ref())
 }
 
 /// Executes an UPDATE query.
+///
+/// Every update and the condition are validated, and every entry is evaluated,
+/// before any file is changed.
 fn execute_update(
     path: &Path,
     recursive: bool,
-    updates: &[crate::sql::ast::FileAttributeUpdate],
+    updates: &[FileAttributeUpdate],
     condition: Option<&FileCondition>,
 ) -> Result<Vec<FileResult>> {
-    let files = list_files(path, recursive)?;
-    let filtered_files = if let Some(cond) = condition {
-        files
-            .into_iter()
-            .filter(|file| evaluate_condition(file, cond).unwrap_or(false))
-            .collect()
-    } else {
-        files
-    };
-
+    let modes = updates
+        .iter()
+        .map(permission_mode)
+        .collect::<Result<Vec<_>>>()?;
+    let predicate = condition.map(Predicate::compile).transpose()?;
     let mut updated_files = Vec::new();
+    if modes.is_empty() {
+        return Ok(updated_files);
+    }
 
-    for file in filtered_files {
+    for file in matching_files(path, recursive, predicate.as_ref())? {
         // Setting permissions acts on a link's target, which may lie outside
         // the queried directory, so links are never updated.
         if fs::symlink_metadata(&file.path)?.file_type().is_symlink() {
             continue;
         }
-
-        let mut file_updated = false;
-
-        for update in updates {
-            match update.attribute {
-                FileAttribute::Permissions => {
-                    let perms = u32::from_str_radix(&update.value, 8).map_err(|_| {
-                        ExecutorError::TypeError(format!(
-                            "Invalid permissions value: {}",
-                            update.value
-                        ))
-                    })?;
-
-                    fs::set_permissions(&file.path, Permissions::from_mode(perms))?;
-                    file_updated = true;
-                }
-                FileAttribute::Owner => {
-                    // Note: Changing ownership requires platform-specific code and often root privileges
-                    // This is a simplified example
-                    return Err(ExecutorError::UnsupportedOperation(
-                        "Changing file ownership is not implemented".to_string(),
-                    ));
-                }
-                _ => {
-                    return Err(ExecutorError::UnsupportedAttribute(format!(
-                        "Cannot update attribute: {:?}",
-                        update.attribute
-                    )));
-                }
-            }
+        for &mode in &modes {
+            fs::set_permissions(&file.path, Permissions::from_mode(mode))?;
         }
-
-        if file_updated {
-            // Re-read the file info to get updated attributes
-            let updated_file = create_file_result(&file.path)?;
-            updated_files.push(updated_file);
-        }
+        // Re-read the file info to get updated attributes
+        updated_files.push(create_file_result(&file.path)?);
     }
 
     Ok(updated_files)
+}
+
+/// Reads the octal mode an update sets, rejecting attributes that cannot be
+/// written.
+fn permission_mode(update: &FileAttributeUpdate) -> Result<u32> {
+    match update.attribute {
+        FileAttribute::Permissions => u32::from_str_radix(&update.value, 8)
+            .ok()
+            .filter(|mode| *mode <= 0o7777)
+            .ok_or_else(|| {
+                ExecutorError::TypeError(format!("Invalid permissions value: {}", update.value))
+            }),
+        FileAttribute::Owner => Err(ExecutorError::UnsupportedOperation(
+            "Changing file ownership is not implemented".to_string(),
+        )),
+        _ => Err(ExecutorError::UnsupportedAttribute(format!(
+            "Cannot update attribute: {:?}",
+            update.attribute
+        ))),
+    }
+}
+
+/// Lists the entries under `path` that satisfy `predicate`.
+///
+/// Callers compile the predicate before calling, so an invalid condition fails
+/// without touching the filesystem.
+fn matching_files(
+    path: &Path,
+    recursive: bool,
+    predicate: Option<&Predicate>,
+) -> Result<Vec<FileResult>> {
+    let files = list_files(path, recursive)?;
+    Ok(match predicate {
+        Some(predicate) => files
+            .into_iter()
+            .filter(|file| predicate.evaluate(file))
+            .collect(),
+        None => files,
+    })
 }
 
 /// Lists files in a directory, optionally recursively.
@@ -271,132 +272,237 @@ fn create_file_result(path: &Path) -> Result<FileResult> {
     })
 }
 
-/// Evaluates a condition against a file.
-fn evaluate_condition(file: &FileResult, condition: &FileCondition) -> Result<bool> {
-    match condition {
-        FileCondition::Compare {
-            attribute,
-            operator,
-            value,
-        } => {
-            let file_value = get_attribute_value(file, attribute)?;
-            compare_values(&file_value, operator, value)
-        }
-        FileCondition::And(left, right) => {
-            let left_result = evaluate_condition(file, left)?;
-            if !left_result {
-                return Ok(false);
-            }
-            evaluate_condition(file, right)
-        }
-        FileCondition::Or(left, right) => {
-            let left_result = evaluate_condition(file, left)?;
-            if left_result {
-                return Ok(true);
-            }
-            evaluate_condition(file, right)
-        }
-        FileCondition::Not(inner) => {
-            let inner_result = evaluate_condition(file, inner)?;
-            Ok(!inner_result)
-        }
-        FileCondition::Like {
-            attribute,
-            pattern,
-            case_sensitive,
-        } => {
-            let file_value = get_attribute_value(file, attribute)?;
+/// The type of value an attribute produces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Text,
+    Number,
+    Time,
+    Boolean,
+}
 
-            match file_value {
-                FileValue::String(s) => {
-                    let file_str = if *case_sensitive { s } else { s.to_lowercase() };
-                    let pattern_str = if *case_sensitive {
-                        pattern.clone()
-                    } else {
-                        pattern.to_lowercase()
-                    };
+/// Returns the kind of value `attribute` produces, or an error if its
+/// metadata is not available.
+fn attribute_kind(attribute: &FileAttribute) -> Result<Kind> {
+    match attribute {
+        FileAttribute::Name
+        | FileAttribute::Path
+        | FileAttribute::Extension
+        | FileAttribute::Owner => Ok(Kind::Text),
+        FileAttribute::Size | FileAttribute::Permissions => Ok(Kind::Number),
+        FileAttribute::Modified => Ok(Kind::Time),
+        FileAttribute::IsDirectory | FileAttribute::IsExecutable => Ok(Kind::Boolean),
+        FileAttribute::All
+        | FileAttribute::Created
+        | FileAttribute::Accessed
+        | FileAttribute::IsSymlink => Err(ExecutorError::UnsupportedAttribute(format!(
+            "Attribute not supported in conditions: {attribute:?}"
+        ))),
+    }
+}
 
-                    // Convert SQL LIKE pattern to regex.
-                    // Replace SQL wildcards with unique sentinels, escape
-                    // regex metacharacters in the rest, then substitute
-                    // sentinels with regex equivalents.
-                    let with_sentinels = pattern_str
-                        .replace('%', "\x00PERCENT\x00")
-                        .replace('_', "\x00UNDER\x00");
-                    let escaped = regex::escape(&with_sentinels);
-                    let regex_pattern = escaped
-                        .replace("\x00PERCENT\x00", ".*")
-                        .replace("\x00UNDER\x00", ".");
+/// A condition whose attributes, operand types and patterns have been
+/// checked, so evaluating it against a file cannot fail.
+#[derive(Debug)]
+enum Predicate {
+    Compare {
+        attribute: FileAttribute,
+        operator: ComparisonOperator,
+        value: FileValue,
+    },
+    Between {
+        attribute: FileAttribute,
+        lower: FileValue,
+        upper: FileValue,
+    },
+    Matches {
+        attribute: FileAttribute,
+        regex: Regex,
+    },
+    And(Box<Predicate>, Box<Predicate>),
+    Or(Box<Predicate>, Box<Predicate>),
+    Not(Box<Predicate>),
+}
 
-                    // `(?s)` lets wildcards match a newline within a file name.
-                    let regex = Regex::new(&format!("(?s)^{regex_pattern}$"))?;
-                    Ok(regex.is_match(&file_str))
+impl Predicate {
+    /// Checks a condition and compiles its patterns. Every branch is checked,
+    /// including ones that short-circuiting might never evaluate.
+    fn compile(condition: &FileCondition) -> Result<Self> {
+        match condition {
+            FileCondition::Compare {
+                attribute,
+                operator,
+                value,
+            } => {
+                let kind = attribute_kind(attribute)?;
+                let value = operand(attribute, kind, value)?;
+                let ordering =
+                    !matches!(operator, ComparisonOperator::Eq | ComparisonOperator::NotEq);
+                if ordering && (kind == Kind::Boolean || matches!(value, FileValue::Null)) {
+                    return Err(ExecutorError::UnsupportedOperation(format!(
+                        "Operator {operator} not supported for {attribute:?} = {value:?}"
+                    )));
                 }
-                _ => Err(ExecutorError::TypeError(format!(
-                    "LIKE can only be used with string attributes, got {file_value:?}"
-                ))),
+                Ok(Self::Compare {
+                    attribute: attribute.clone(),
+                    operator: operator.clone(),
+                    value,
+                })
             }
-        }
-        FileCondition::Between {
-            attribute,
-            lower,
-            upper,
-        } => {
-            let file_value = get_attribute_value(file, attribute)?;
-
-            let greater_than_lower = compare_values(&file_value, &ComparisonOperator::GtEq, lower)?;
-            let less_than_upper = compare_values(&file_value, &ComparisonOperator::LtEq, upper)?;
-
-            Ok(greater_than_lower && less_than_upper)
-        }
-        FileCondition::Regexp { attribute, pattern } => {
-            let file_value = get_attribute_value(file, attribute)?;
-
-            match file_value {
-                FileValue::String(s) => {
-                    let regex = Regex::new(pattern)?;
-                    Ok(regex.is_match(&s))
+            FileCondition::Between {
+                attribute,
+                lower,
+                upper,
+            } => {
+                let kind = attribute_kind(attribute)?;
+                let lower = operand(attribute, kind, lower)?;
+                let upper = operand(attribute, kind, upper)?;
+                if kind == Kind::Boolean
+                    || matches!(lower, FileValue::Null)
+                    || matches!(upper, FileValue::Null)
+                {
+                    return Err(ExecutorError::UnsupportedOperation(format!(
+                        "BETWEEN not supported for {attribute:?}"
+                    )));
                 }
-                _ => Err(ExecutorError::TypeError(format!(
-                    "REGEXP can only be used with string attributes, got {file_value:?}"
-                ))),
+                Ok(Self::Between {
+                    attribute: attribute.clone(),
+                    lower,
+                    upper,
+                })
             }
+            FileCondition::Like {
+                attribute,
+                pattern,
+                case_sensitive,
+            } => {
+                text_attribute(attribute, "LIKE")?;
+                Ok(Self::Matches {
+                    attribute: attribute.clone(),
+                    regex: like_regex(pattern, *case_sensitive)?,
+                })
+            }
+            FileCondition::Regexp { attribute, pattern } => {
+                text_attribute(attribute, "REGEXP")?;
+                Ok(Self::Matches {
+                    attribute: attribute.clone(),
+                    regex: Regex::new(pattern)?,
+                })
+            }
+            FileCondition::And(left, right) => Ok(Self::And(
+                Box::new(Self::compile(left)?),
+                Box::new(Self::compile(right)?),
+            )),
+            FileCondition::Or(left, right) => Ok(Self::Or(
+                Box::new(Self::compile(left)?),
+                Box::new(Self::compile(right)?),
+            )),
+            FileCondition::Not(inner) => Ok(Self::Not(Box::new(Self::compile(inner)?))),
+        }
+    }
+
+    /// Evaluates the predicate against a file.
+    fn evaluate(&self, file: &FileResult) -> bool {
+        match self {
+            Self::Compare {
+                attribute,
+                operator,
+                value,
+            } => compare_values(&attribute_value(file, attribute), operator, value),
+            Self::Between {
+                attribute,
+                lower,
+                upper,
+            } => {
+                let file_value = attribute_value(file, attribute);
+                compare_values(&file_value, &ComparisonOperator::GtEq, lower)
+                    && compare_values(&file_value, &ComparisonOperator::LtEq, upper)
+            }
+            Self::Matches { attribute, regex } => match attribute_value(file, attribute) {
+                FileValue::String(s) => regex.is_match(&s),
+                // An unknown owner matches no pattern.
+                _ => false,
+            },
+            Self::And(left, right) => left.evaluate(file) && right.evaluate(file),
+            Self::Or(left, right) => left.evaluate(file) || right.evaluate(file),
+            Self::Not(inner) => !inner.evaluate(file),
         }
     }
 }
 
-/// Gets the value of a file attribute.
+/// Rejects pattern matching on attributes that are not strings.
+fn text_attribute(attribute: &FileAttribute, operation: &str) -> Result<()> {
+    if attribute_kind(attribute)? == Kind::Text {
+        Ok(())
+    } else {
+        Err(ExecutorError::TypeError(format!(
+            "{operation} can only be used with string attributes, got {attribute:?}"
+        )))
+    }
+}
+
+/// Checks that a literal suits an attribute of the given kind, parsing date
+/// strings so they compare as times.
+fn operand(attribute: &FileAttribute, kind: Kind, value: &FileValue) -> Result<FileValue> {
+    match (kind, value) {
+        (_, FileValue::Null)
+        | (Kind::Text, FileValue::String(_))
+        | (Kind::Number, FileValue::Number(_))
+        | (Kind::Time, FileValue::DateTime(_))
+        | (Kind::Boolean, FileValue::Boolean(_)) => Ok(value.clone()),
+        (Kind::Time, FileValue::String(s)) => parse_date_string(s).map(FileValue::DateTime),
+        _ => Err(ExecutorError::TypeError(format!(
+            "Cannot compare {attribute:?} with {value:?}"
+        ))),
+    }
+}
+
+/// Converts a SQL LIKE pattern, where `%` matches any run of characters and
+/// `_` matches one, into an anchored regular expression. Everything else is
+/// literal.
+fn like_regex(pattern: &str, case_sensitive: bool) -> Result<Regex> {
+    let mut regex = String::from("^");
+    for c in pattern.chars() {
+        match c {
+            '%' => regex.push_str(".*"),
+            '_' => regex.push('.'),
+            c => regex.push_str(&regex::escape(c.encode_utf8(&mut [0; 4]))),
+        }
+    }
+    regex.push('$');
+    // Wildcards may match a newline within a file name.
+    Ok(RegexBuilder::new(&regex)
+        .case_insensitive(!case_sensitive)
+        .dot_matches_new_line(true)
+        .build()?)
+}
+
+/// Gets the value of a file attribute. [`Predicate::compile`] has already
+/// rejected attributes whose metadata is unavailable.
 #[expect(
     clippy::cast_precision_loss,
     reason = "sizes above 2^53 bytes (8 PiB) are not a practical concern"
 )]
-fn get_attribute_value(file: &FileResult, attribute: &FileAttribute) -> Result<FileValue> {
+fn attribute_value(file: &FileResult, attribute: &FileAttribute) -> FileValue {
     match attribute {
-        FileAttribute::Name => Ok(FileValue::String(file.name.clone())),
-        FileAttribute::Path => Ok(FileValue::String(file.path.to_string_lossy().to_string())),
-        FileAttribute::Size => Ok(FileValue::Number(file.size as f64)),
-        FileAttribute::Extension => Ok(FileValue::String(
-            file.extension.clone().unwrap_or_default(),
-        )),
-        FileAttribute::Modified => Ok(FileValue::DateTime(file.modified)),
+        FileAttribute::Name => FileValue::String(file.name.clone()),
+        FileAttribute::Path => FileValue::String(file.path.to_string_lossy().to_string()),
+        FileAttribute::Size => FileValue::Number(file.size as f64),
+        FileAttribute::Extension => FileValue::String(file.extension.clone().unwrap_or_default()),
+        FileAttribute::Modified => FileValue::DateTime(file.modified),
         // Compare permission bits only; the raw mode also carries file-type bits.
-        FileAttribute::Permissions => Ok(FileValue::Number(f64::from(file.permissions & 0o7777))),
-        FileAttribute::IsDirectory => Ok(FileValue::Boolean(file.is_directory)),
-        FileAttribute::Owner => {
-            if let Some(owner) = &file.owner {
-                Ok(FileValue::String(owner.clone()))
-            } else {
-                Ok(FileValue::Null)
-            }
-        }
-        FileAttribute::IsExecutable => {
-            // Check if file has executable bit set for user
-            let is_executable = file.permissions & 0o100 != 0;
-            Ok(FileValue::Boolean(is_executable))
-        }
-        _ => Err(ExecutorError::UnsupportedAttribute(format!(
-            "Attribute not supported in conditions: {attribute:?}"
-        ))),
+        FileAttribute::Permissions => FileValue::Number(f64::from(file.permissions & 0o7777)),
+        FileAttribute::IsDirectory => FileValue::Boolean(file.is_directory),
+        FileAttribute::Owner => file
+            .owner
+            .clone()
+            .map_or(FileValue::Null, FileValue::String),
+        // Check if file has executable bit set for user
+        FileAttribute::IsExecutable => FileValue::Boolean(file.permissions & 0o100 != 0),
+        FileAttribute::All
+        | FileAttribute::Created
+        | FileAttribute::Accessed
+        | FileAttribute::IsSymlink => unreachable!("compile rejects {attribute:?}"),
     }
 }
 
@@ -413,74 +519,24 @@ fn ordered<T: PartialOrd + ?Sized>(left: &T, operator: &ComparisonOperator, righ
     }
 }
 
-/// Compares two values.
-fn compare_values(
-    left: &FileValue,
-    operator: &ComparisonOperator,
-    right: &FileValue,
-) -> Result<bool> {
+/// Compares a file's value with a literal of the kind [`operand`] accepted.
+/// A null on either side equals only another null.
+fn compare_values(left: &FileValue, operator: &ComparisonOperator, right: &FileValue) -> bool {
     match (left, right) {
-        (FileValue::String(l), FileValue::String(r)) => Ok(ordered(l, operator, r)),
-        (FileValue::Number(l), FileValue::Number(r)) => Ok(ordered(l, operator, r)),
-        (FileValue::DateTime(l), FileValue::DateTime(r)) => Ok(ordered(l, operator, r)),
-        (FileValue::Boolean(l), FileValue::Boolean(r)) => match operator {
-            ComparisonOperator::Eq => Ok(l == r),
-            ComparisonOperator::NotEq => Ok(l != r),
-            _ => Err(ExecutorError::UnsupportedOperation(format!(
-                "Operator {operator:?} not supported for boolean values"
-            ))),
-        },
-        (FileValue::Null, FileValue::Null) => match operator {
-            ComparisonOperator::Eq => Ok(true),
-            ComparisonOperator::NotEq => Ok(false),
-            _ => Err(ExecutorError::UnsupportedOperation(
-                "Null values only support equality comparisons".to_string(),
-            )),
-        },
-        (_, FileValue::Null) | (FileValue::Null, _) => match operator {
-            ComparisonOperator::Eq => Ok(false),
-            ComparisonOperator::NotEq => Ok(true),
-            _ => Err(ExecutorError::UnsupportedOperation(
-                "Null values only support equality comparisons".to_string(),
-            )),
-        },
-        // Coerce a String into DateTime when the other operand is DateTime.
-        (FileValue::DateTime(l), FileValue::String(r)) => {
-            if let Ok(parsed) = parse_date_string(r) {
-                compare_values(
-                    &FileValue::DateTime(*l),
-                    operator,
-                    &FileValue::DateTime(parsed),
-                )
-            } else {
-                Err(ExecutorError::TypeError(format!(
-                    "Cannot parse '{r}' as a date for comparison with DateTime"
-                )))
-            }
-        }
-        (FileValue::String(l), FileValue::DateTime(r)) => {
-            if let Ok(parsed) = parse_date_string(l) {
-                compare_values(
-                    &FileValue::DateTime(parsed),
-                    operator,
-                    &FileValue::DateTime(*r),
-                )
-            } else {
-                Err(ExecutorError::TypeError(format!(
-                    "Cannot parse '{l}' as a date for comparison with DateTime"
-                )))
-            }
-        }
-        _ => Err(ExecutorError::TypeError(format!(
-            "Cannot compare values of different types: {left:?} and {right:?}"
-        ))),
+        (FileValue::String(l), FileValue::String(r)) => ordered(l, operator, r),
+        (FileValue::Number(l), FileValue::Number(r)) => ordered(l, operator, r),
+        (FileValue::DateTime(l), FileValue::DateTime(r)) => ordered(l, operator, r),
+        (FileValue::Boolean(l), FileValue::Boolean(r)) => ordered(l, operator, r),
+        (FileValue::Null, FileValue::Null) => *operator == ComparisonOperator::Eq,
+        (FileValue::Null, _) | (_, FileValue::Null) => *operator == ComparisonOperator::NotEq,
+        _ => unreachable!("compile checks operand types: {left:?} {operator} {right:?}"),
     }
 }
 
 /// Attempts to parse a date string into a `DateTime<Utc>`.
 ///
 /// Supports the formats `YYYY-MM-DD` and full RFC 3339 / ISO 8601 timestamps.
-fn parse_date_string(s: &str) -> std::result::Result<DateTime<Utc>, ExecutorError> {
+fn parse_date_string(s: &str) -> Result<DateTime<Utc>> {
     // Try full RFC 3339 first (e.g. "2025-01-01T00:00:00Z")
     if let Ok(dt) = s.parse::<DateTime<Utc>>() {
         return Ok(dt);
