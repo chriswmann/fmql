@@ -2,15 +2,10 @@
 //!
 //! This crate provides a command-line tool for managing files using a SQL-like query language.
 
-// mod display;
-mod error;
-// mod file;
-mod sql;
-
 use clap::{Parser, Subcommand};
 use std::process;
 
-use crate::sql::{execute_query, parse_sql};
+use fmql::sql::{execute_query, parse_sql};
 
 /// Command-line arguments for the SQL mode
 #[derive(Parser, Debug)]
@@ -58,33 +53,30 @@ fn run_sql_mode(args: &SqlCommand) {
         Ok(query) => {
             match execute_query(&query) {
                 Ok(results) => {
-                    match args.format.as_str() {
-                        "json" => {
-                            println!(
-                                "{}",
-                                serde_json::to_string_pretty(&results).unwrap_or_else(|e| {
-                                    eprintln!("Error serializing results: {}", e);
-                                    process::exit(1);
-                                })
-                            );
-                        }
-                        _ => {
-                            // Default to text output
-                            println!("{} results found:", results.len());
-                            for result in &results {
-                                println!("{}: {} bytes", result.path.display(), result.size);
-                            }
+                    if args.format.as_str() == "json" {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&results).unwrap_or_else(|e| {
+                                eprintln!("Error serializing results: {e}");
+                                process::exit(1);
+                            })
+                        );
+                    } else {
+                        // Default to text output
+                        println!("{} results found:", results.len());
+                        for result in &results {
+                            println!("{}: {} bytes", result.path.display(), result.size);
                         }
                     }
                 }
                 Err(err) => {
-                    eprintln!("Error executing query: {}", err);
+                    eprintln!("Error executing query: {err}");
                     process::exit(1);
                 }
             }
         }
         Err(err) => {
-            eprintln!("Error parsing SQL query: {}", err);
+            eprintln!("Error parsing SQL query: {err}");
             process::exit(1);
         }
     }

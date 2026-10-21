@@ -17,7 +17,7 @@ use crate::sql::ast::{ComparisonOperator, FileAttribute, FileCondition, FileQuer
 /// Errors that can occur during query execution.
 #[derive(Error, Debug)]
 pub enum ExecutorError {
-    /// Error from std::io operations.
+    /// Error from `std::io` operations.
     #[error("I/O error: {0}")]
     IoError(#[from] std::io::Error),
 
@@ -63,19 +63,24 @@ pub struct FileResult {
     pub owner: Option<String>,
 }
 
-/// Executes a parsed FileQuery.
+/// Executes a parsed `FileQuery`.
 ///
 /// # Arguments
 ///
-/// * `query` - The parsed FileQuery to execute.
+/// * `query` - The parsed `FileQuery` to execute.
 ///
 /// # Returns
 ///
-/// A Result containing a vector of FileResult instances or an ExecutorError.
+/// A Result containing a vector of `FileResult` instances or an `ExecutorError`.
+///
+/// # Errors
+///
+/// Returns an error if the directory cannot be read, a file's metadata cannot
+/// be read, or an update requests an unsupported attribute or fails to apply.
 ///
 /// # Examples
 ///
-/// Example of using execute_query to process a parsed query:
+/// Example of using `execute_query` to process a parsed query:
 ///
 /// ```no_run
 /// use fmql::sql::{parse_sql, execute_query};
@@ -210,10 +215,9 @@ fn list_files(dir_path: &Path, recursive: bool) -> Result<Vec<FileResult>> {
 
     for entry in walker {
         let entry = entry.map_err(|e| {
-            ExecutorError::IoError(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Failed to read directory entry: {}", e),
-            ))
+            ExecutorError::IoError(std::io::Error::other(format!(
+                "Failed to read directory entry: {e}"
+            )))
         })?;
 
         // Skip the root directory itself -- we only want its children.
@@ -228,7 +232,7 @@ fn list_files(dir_path: &Path, recursive: bool) -> Result<Vec<FileResult>> {
     Ok(results)
 }
 
-/// Creates a FileResult from a path.
+/// Creates a `FileResult` from a path.
 fn create_file_result(path: &Path) -> Result<FileResult> {
     // Describe a link by its target, falling back to the link itself when the
     // target is missing so one broken link cannot fail the whole query.
@@ -243,12 +247,11 @@ fn create_file_result(path: &Path) -> Result<FileResult> {
     let extension = path
         .extension()
         .and_then(|ext| ext.to_str())
-        .map(|ext| ext.to_string());
+        .map(std::string::ToString::to_string);
 
     let modified = metadata
         .modified()
-        .map(DateTime::<Utc>::from)
-        .unwrap_or_else(|_| Utc::now());
+        .map_or_else(|_| Utc::now(), DateTime::<Utc>::from);
 
     let permissions = metadata.permissions().mode();
 
@@ -326,12 +329,11 @@ fn evaluate_condition(file: &FileResult, condition: &FileCondition) -> Result<bo
                         .replace("\x00UNDER\x00", ".");
 
                     // `(?s)` lets wildcards match a newline within a file name.
-                    let regex = Regex::new(&format!("(?s)^{}$", regex_pattern))?;
+                    let regex = Regex::new(&format!("(?s)^{regex_pattern}$"))?;
                     Ok(regex.is_match(&file_str))
                 }
                 _ => Err(ExecutorError::TypeError(format!(
-                    "LIKE can only be used with string attributes, got {:?}",
-                    file_value
+                    "LIKE can only be used with string attributes, got {file_value:?}"
                 ))),
             }
         }
@@ -356,8 +358,7 @@ fn evaluate_condition(file: &FileResult, condition: &FileCondition) -> Result<bo
                     Ok(regex.is_match(&s))
                 }
                 _ => Err(ExecutorError::TypeError(format!(
-                    "REGEXP can only be used with string attributes, got {:?}",
-                    file_value
+                    "REGEXP can only be used with string attributes, got {file_value:?}"
                 ))),
             }
         }
@@ -365,6 +366,10 @@ fn evaluate_condition(file: &FileResult, condition: &FileCondition) -> Result<bo
 }
 
 /// Gets the value of a file attribute.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "sizes above 2^53 bytes (8 PiB) are not a practical concern"
+)]
 fn get_attribute_value(file: &FileResult, attribute: &FileAttribute) -> Result<FileValue> {
     match attribute {
         FileAttribute::Name => Ok(FileValue::String(file.name.clone())),
@@ -375,7 +380,7 @@ fn get_attribute_value(file: &FileResult, attribute: &FileAttribute) -> Result<F
         )),
         FileAttribute::Modified => Ok(FileValue::DateTime(file.modified)),
         // Compare permission bits only; the raw mode also carries file-type bits.
-        FileAttribute::Permissions => Ok(FileValue::Number((file.permissions & 0o7777) as f64)),
+        FileAttribute::Permissions => Ok(FileValue::Number(f64::from(file.permissions & 0o7777))),
         FileAttribute::IsDirectory => Ok(FileValue::Boolean(file.is_directory)),
         FileAttribute::Owner => {
             if let Some(owner) = &file.owner {
@@ -390,9 +395,21 @@ fn get_attribute_value(file: &FileResult, attribute: &FileAttribute) -> Result<F
             Ok(FileValue::Boolean(is_executable))
         }
         _ => Err(ExecutorError::UnsupportedAttribute(format!(
-            "Attribute not supported in conditions: {:?}",
-            attribute
+            "Attribute not supported in conditions: {attribute:?}"
         ))),
+    }
+}
+
+/// Applies an operator to two values of the same ordered type. Sizes and
+/// permission bits are whole numbers, so exact float equality is intended.
+fn ordered<T: PartialOrd + ?Sized>(left: &T, operator: &ComparisonOperator, right: &T) -> bool {
+    match operator {
+        ComparisonOperator::Eq => left == right,
+        ComparisonOperator::NotEq => left != right,
+        ComparisonOperator::Lt => left < right,
+        ComparisonOperator::LtEq => left <= right,
+        ComparisonOperator::Gt => left > right,
+        ComparisonOperator::GtEq => left >= right,
     }
 }
 
@@ -403,36 +420,14 @@ fn compare_values(
     right: &FileValue,
 ) -> Result<bool> {
     match (left, right) {
-        (FileValue::String(l), FileValue::String(r)) => match operator {
-            ComparisonOperator::Eq => Ok(l == r),
-            ComparisonOperator::NotEq => Ok(l != r),
-            ComparisonOperator::Lt => Ok(l < r),
-            ComparisonOperator::LtEq => Ok(l <= r),
-            ComparisonOperator::Gt => Ok(l > r),
-            ComparisonOperator::GtEq => Ok(l >= r),
-        },
-        (FileValue::Number(l), FileValue::Number(r)) => match operator {
-            ComparisonOperator::Eq => Ok(l == r),
-            ComparisonOperator::NotEq => Ok(l != r),
-            ComparisonOperator::Lt => Ok(l < r),
-            ComparisonOperator::LtEq => Ok(l <= r),
-            ComparisonOperator::Gt => Ok(l > r),
-            ComparisonOperator::GtEq => Ok(l >= r),
-        },
-        (FileValue::DateTime(l), FileValue::DateTime(r)) => match operator {
-            ComparisonOperator::Eq => Ok(l == r),
-            ComparisonOperator::NotEq => Ok(l != r),
-            ComparisonOperator::Lt => Ok(l < r),
-            ComparisonOperator::LtEq => Ok(l <= r),
-            ComparisonOperator::Gt => Ok(l > r),
-            ComparisonOperator::GtEq => Ok(l >= r),
-        },
+        (FileValue::String(l), FileValue::String(r)) => Ok(ordered(l, operator, r)),
+        (FileValue::Number(l), FileValue::Number(r)) => Ok(ordered(l, operator, r)),
+        (FileValue::DateTime(l), FileValue::DateTime(r)) => Ok(ordered(l, operator, r)),
         (FileValue::Boolean(l), FileValue::Boolean(r)) => match operator {
             ComparisonOperator::Eq => Ok(l == r),
             ComparisonOperator::NotEq => Ok(l != r),
             _ => Err(ExecutorError::UnsupportedOperation(format!(
-                "Operator {:?} not supported for boolean values",
-                operator
+                "Operator {operator:?} not supported for boolean values"
             ))),
         },
         (FileValue::Null, FileValue::Null) => match operator {
@@ -459,8 +454,7 @@ fn compare_values(
                 )
             } else {
                 Err(ExecutorError::TypeError(format!(
-                    "Cannot parse '{}' as a date for comparison with DateTime",
-                    r
+                    "Cannot parse '{r}' as a date for comparison with DateTime"
                 )))
             }
         }
@@ -473,14 +467,12 @@ fn compare_values(
                 )
             } else {
                 Err(ExecutorError::TypeError(format!(
-                    "Cannot parse '{}' as a date for comparison with DateTime",
-                    l
+                    "Cannot parse '{l}' as a date for comparison with DateTime"
                 )))
             }
         }
         _ => Err(ExecutorError::TypeError(format!(
-            "Cannot compare values of different types: {:?} and {:?}",
-            left, right
+            "Cannot compare values of different types: {left:?} and {right:?}"
         ))),
     }
 }
@@ -494,12 +486,11 @@ fn parse_date_string(s: &str) -> std::result::Result<DateTime<Utc>, ExecutorErro
         return Ok(dt);
     }
     // Try bare date "YYYY-MM-DD" by appending midnight UTC
-    if let Ok(dt) = format!("{}T00:00:00Z", s).parse::<DateTime<Utc>>() {
+    if let Ok(dt) = format!("{s}T00:00:00Z").parse::<DateTime<Utc>>() {
         return Ok(dt);
     }
     Err(ExecutorError::TypeError(format!(
-        "Cannot parse '{}' as a date",
-        s
+        "Cannot parse '{s}' as a date"
     )))
 }
 
