@@ -151,6 +151,34 @@ pub enum FileAttribute {
     IsExecutable,
 }
 
+impl FileAttribute {
+    /// The attribute's name in queries and JSON output; `*` for [`Self::All`].
+    ///
+    /// ```
+    /// use fmql::sql::ast::FileAttribute;
+    ///
+    /// assert_eq!(FileAttribute::IsSymlink.name(), "is_symlink");
+    /// ```
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::All => "*",
+            Self::Name => "name",
+            Self::Path => "path",
+            Self::Size => "size",
+            Self::Extension => "extension",
+            Self::Modified => "modified",
+            Self::Created => "created",
+            Self::Accessed => "accessed",
+            Self::Permissions => "permissions",
+            Self::Owner => "owner",
+            Self::IsDirectory => "is_directory",
+            Self::IsSymlink => "is_symlink",
+            Self::IsExecutable => "is_executable",
+        }
+    }
+}
+
 /// A sort key in an `ORDER BY` clause.
 ///
 /// Nulls sort after every other value in ascending order and before them in

@@ -1,6 +1,6 @@
 //! Parsing and validation for the supported file-query SQL subset.
 //!
-//! Supports `SELECT * FROM path [WHERE condition] [ORDER BY attribute
+//! Supports `SELECT * | attribute, ... FROM path [WHERE condition] [ORDER BY attribute
 //! [ASC|DESC], ...] [LIMIT n]` and
 //! `UPDATE path SET permissions = '640' [WHERE condition]`.
 //! Prefix either with `WITH RECURSIVE` to include descendants. Double-quote
@@ -51,6 +51,8 @@ pub enum ParserError {
     },
     #[error("Invalid regular expression: {0}")]
     InvalidRegex(#[from] regex::Error),
+    #[error("Column selected more than once: {0}")]
+    DuplicateColumn(String),
     #[error("LIMIT {0} is too large")]
     InvalidLimit(u64),
 }
@@ -68,9 +70,9 @@ pub fn parse_sql(sql: &str) -> Result<FileQuery> {
     let mut parser = Parser::new(&dialect).try_with_sql(sql)?;
     let recursive = parser.parse_keywords(&[Keyword::WITH, Keyword::RECURSIVE]);
     let select = parser.parse_keyword(Keyword::SELECT);
+    let mut attributes = vec![FileAttribute::All];
     if select {
-        // Projection is not implemented by the executor; do not silently ignore it.
-        parser.expect_token(&Token::Mul)?;
+        attributes = parse_projection(&mut parser)?;
         parser.expect_keyword(Keyword::FROM)?;
     } else if !parser.parse_keyword(Keyword::UPDATE) {
         return Err(ParserError::UnsupportedStatement(sql.to_owned()));
@@ -105,7 +107,7 @@ pub fn parse_sql(sql: &str) -> Result<FileQuery> {
         Ok(FileQuery::Select {
             path,
             recursive,
-            attributes: vec![FileAttribute::All],
+            attributes,
             condition,
             order_by,
             limit,
@@ -177,6 +179,24 @@ fn path_token(token: &Token) -> Option<String> {
             Some(token.to_string())
         }
         _ => None,
+    }
+}
+
+/// Reads `*` or a list of distinct attributes. `*` stands alone.
+fn parse_projection(parser: &mut Parser<'_>) -> Result<Vec<FileAttribute>> {
+    if parser.consume_token(&Token::Mul) {
+        return Ok(vec![FileAttribute::All]);
+    }
+    let mut attributes = Vec::new();
+    loop {
+        let attribute = parse_attribute(&Expr::Identifier(parser.parse_identifier()?))?;
+        if attributes.contains(&attribute) {
+            return Err(ParserError::DuplicateColumn(attribute.name().to_owned()));
+        }
+        attributes.push(attribute);
+        if !parser.consume_token(&Token::Comma) {
+            return Ok(attributes);
+        }
     }
 }
 

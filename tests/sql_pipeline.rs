@@ -171,7 +171,15 @@ fn rejects_unsupported_or_incomplete_queries() {
         "SELECT * FROM . WHERE permissions > 600",
         "SELECT * FROM . WHERE permissions BETWEEN 600 AND 700",
         "SELECT * FROM . WHERE modified > 'not a date'",
-        "SELECT name FROM .",
+        "SELECT FROM .",
+        "SELECT name, FROM .",
+        "SELECT name, name FROM .",
+        "SELECT *, name FROM .",
+        "SELECT name, * FROM .",
+        "SELECT nonsense FROM .",
+        "SELECT size + 1 FROM .",
+        "SELECT name AS n FROM .",
+        "UPDATE . SET permissions = '600' RETURNING name",
         "SELECT DISTINCT * FROM .",
         "SELECT * FROM . ORDER BY",
         "SELECT * FROM . ORDER BY size,",
@@ -471,7 +479,7 @@ fn query_runs_parse_and_execute_together() {
     names.sort();
     assert_eq!(names, ["alpha.rs", "child.rs"]);
     assert!(matches!(
-        fmql::query("SELECT name FROM ."),
+        fmql::query("SELECT nonsense FROM ."),
         Err(fmql::FMQLError::Parse(_))
     ));
 }
@@ -570,4 +578,32 @@ fn order_by_and_limit_shape_select_results() {
         )),
         ["child.rs", "alpha.rs"]
     );
+}
+
+#[test]
+fn cli_projects_selected_attributes_in_order() {
+    let dir = fixture();
+    let sql = format!(
+        "SELECT size, name, permissions FROM {} WHERE NOT is_directory ORDER BY size",
+        dir.path().display()
+    );
+
+    let text = fmql(&["sql", &sql]);
+    assert!(text.status.success());
+    assert_eq!(
+        String::from_utf8(text.stdout).unwrap(),
+        "1  it's.txt  640\n4  alpha.rs  640\n9  beta.txt  640\n"
+    );
+
+    let json = fmql(&["sql", &sql, "--format", "json"]);
+    assert!(json.status.success());
+    let rows: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let first = rows[0].as_object().unwrap();
+    assert_eq!(
+        first.keys().collect::<Vec<_>>(),
+        ["size", "name", "permissions"]
+    );
+    assert_eq!(rows[2]["name"], "beta.txt");
+    assert_eq!(rows[2]["size"], 9);
+    assert_eq!(rows[2]["permissions"], 0o100_640);
 }
