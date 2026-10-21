@@ -87,7 +87,10 @@ fn test_non_recursive_update_skips_subdirectory_files() {
     // Verify nested.sh was NOT updated (it should still have default perms).
     let nested_meta = fs::metadata(dir.path().join("sub/nested.sh")).unwrap();
     let nested_mode = nested_meta.permissions().mode() & 0o777;
-    assert_ne!(nested_mode, 0o755, "Nested file should not have been updated");
+    assert_ne!(
+        nested_mode, 0o755,
+        "Nested file should not have been updated"
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -191,7 +194,11 @@ fn test_between_modified_excludes_outside_range() {
     };
 
     let results = execute_query(&query).unwrap();
-    assert_eq!(results.len(), 0, "No files should match a range in the past");
+    assert_eq!(
+        results.len(),
+        0,
+        "No files should match a range in the past"
+    );
 }
 
 // -----------------------------------------------------------------------

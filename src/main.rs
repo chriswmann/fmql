@@ -10,16 +10,18 @@ mod sql;
 use clap::{Parser, Subcommand};
 use std::process;
 
-use crate::sql::{parse_sql, execute_query};
+use crate::sql::{execute_query, parse_sql};
 
 /// Command-line arguments for the SQL mode
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
 struct SqlCommand {
     /// SQL query to execute
-    #[arg(help = "SQL query to execute (e.g., \"SELECT * FROM ~/Documents WHERE extension = '.txt'\"")]
+    #[arg(
+        help = "SQL query to execute (e.g., \"SELECT * FROM ~/Documents WHERE extension = '.txt'\""
+    )]
     query: String,
-    
+
     /// Output format (text or json)
     #[arg(short, long, default_value = "text")]
     format: String,
@@ -41,12 +43,12 @@ enum Command {
 
 fn main() {
     let args = AppArgs::parse();
-    
+
     match args.command {
         Command::Sql(sql_args) => {
             // Run in SQL mode
             run_sql_mode(&sql_args);
-        },
+        }
     }
 }
 
@@ -58,11 +60,14 @@ fn run_sql_mode(args: &SqlCommand) {
                 Ok(results) => {
                     match args.format.as_str() {
                         "json" => {
-                            println!("{}", serde_json::to_string_pretty(&results).unwrap_or_else(|e| {
-                                eprintln!("Error serializing results: {}", e);
-                                process::exit(1);
-                            }));
-                        },
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&results).unwrap_or_else(|e| {
+                                    eprintln!("Error serializing results: {}", e);
+                                    process::exit(1);
+                                })
+                            );
+                        }
                         _ => {
                             // Default to text output
                             println!("{} results found:", results.len());
@@ -71,16 +76,16 @@ fn run_sql_mode(args: &SqlCommand) {
                             }
                         }
                     }
-                },
+                }
                 Err(err) => {
                     eprintln!("Error executing query: {}", err);
                     process::exit(1);
                 }
             }
-        },
+        }
         Err(err) => {
             eprintln!("Error parsing SQL query: {}", err);
             process::exit(1);
         }
     }
-} 
+}

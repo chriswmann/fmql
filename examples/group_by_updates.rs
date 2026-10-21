@@ -285,4 +285,3 @@ fn list_all_files(dir_path: &Path) {
         }
     }
 }
-
