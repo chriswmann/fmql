@@ -30,7 +30,7 @@ use sqlparser::dialect::{Dialect, GenericDialect};
 
 /// A custom SQL dialect for file management operations.
 ///
-/// This dialect extends the GenericDialect with specific syntax elements
+/// This dialect extends the `GenericDialect` with specific syntax elements
 /// for file operations, allowing SQL queries to reference file paths,
 /// use file-specific attributes, and perform file management operations.
 ///

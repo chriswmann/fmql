@@ -23,33 +23,9 @@ fn setup_test_directory() -> TempDir {
         "This is a larger document with even more content for testing",
         0o644,
     );
-    create_file(
-        &dir,
-        "image1.jpg",
-        &vec![0; 10000]
-            .into_iter()
-            .map(|_| b'X')
-            .collect::<Vec<u8>>(),
-        0o644,
-    );
-    create_file(
-        &dir,
-        "image2.jpg",
-        &vec![0; 20000]
-            .into_iter()
-            .map(|_| b'X')
-            .collect::<Vec<u8>>(),
-        0o644,
-    );
-    create_file(
-        &dir,
-        "image3.png",
-        &vec![0; 30000]
-            .into_iter()
-            .map(|_| b'X')
-            .collect::<Vec<u8>>(),
-        0o644,
-    );
+    create_file(&dir, "image1.jpg", &vec![b'X'; 10000], 0o644);
+    create_file(&dir, "image2.jpg", &vec![b'X'; 20000], 0o644);
+    create_file(&dir, "image3.png", &vec![b'X'; 30000], 0o644);
     create_file(
         &dir,
         "script1.sh",
@@ -84,24 +60,8 @@ fn setup_test_directory() -> TempDir {
     // Add files to subdirectories
     create_file(&dir, "documents/report.txt", "Annual report content", 0o644);
     create_file(&dir, "documents/memo.txt", "Office memo", 0o644);
-    create_file(
-        &dir,
-        "images/photo1.jpg",
-        &vec![0; 40000]
-            .into_iter()
-            .map(|_| b'X')
-            .collect::<Vec<u8>>(),
-        0o644,
-    );
-    create_file(
-        &dir,
-        "images/photo2.png",
-        &vec![0; 50000]
-            .into_iter()
-            .map(|_| b'X')
-            .collect::<Vec<u8>>(),
-        0o644,
-    );
+    create_file(&dir, "images/photo1.jpg", &vec![b'X'; 40000], 0o644);
+    create_file(&dir, "images/photo2.png", &vec![b'X'; 50000], 0o644);
     create_file(
         &dir,
         "scripts/backup.sh",
@@ -188,7 +148,7 @@ fn main() {
 /// Basic SELECT queries without filtering
 fn basic_select_queries(dir_path: &Path) {
     let query = format!("SELECT * FROM {}", dir_path.display());
-    println!("Query: {}", query);
+    println!("Query: {query}");
 
     match parse_sql(&query) {
         Ok(parsed_query) => match execute_query(&parsed_query) {
@@ -199,11 +159,11 @@ fn basic_select_queries(dir_path: &Path) {
                 }
             }
             Err(err) => {
-                eprintln!("Error executing query: {}", err);
+                eprintln!("Error executing query: {err}");
             }
         },
         Err(err) => {
-            eprintln!("Error parsing SQL query: {}", err);
+            eprintln!("Error parsing SQL query: {err}");
         }
     }
 }
@@ -226,7 +186,7 @@ fn filtering_queries(dir_path: &Path) {
     ];
 
     for query in &queries {
-        println!("\nQuery: {}", query);
+        println!("\nQuery: {query}");
 
         match parse_sql(query) {
             Ok(parsed_query) => match execute_query(&parsed_query) {
@@ -237,11 +197,11 @@ fn filtering_queries(dir_path: &Path) {
                     }
                 }
                 Err(err) => {
-                    eprintln!("Error executing query: {}", err);
+                    eprintln!("Error executing query: {err}");
                 }
             },
             Err(err) => {
-                eprintln!("Error parsing SQL query: {}", err);
+                eprintln!("Error parsing SQL query: {err}");
             }
         }
     }
@@ -268,7 +228,7 @@ fn complex_conditions(dir_path: &Path) {
     ];
 
     for query in &queries {
-        println!("\nQuery: {}", query);
+        println!("\nQuery: {query}");
 
         match parse_sql(query) {
             Ok(parsed_query) => match execute_query(&parsed_query) {
@@ -279,11 +239,11 @@ fn complex_conditions(dir_path: &Path) {
                     }
                 }
                 Err(err) => {
-                    eprintln!("Error executing query: {}", err);
+                    eprintln!("Error executing query: {err}");
                 }
             },
             Err(err) => {
-                eprintln!("Error parsing SQL query: {}", err);
+                eprintln!("Error parsing SQL query: {err}");
             }
         }
     }
@@ -310,7 +270,7 @@ fn pattern_matching(dir_path: &Path) {
     ];
 
     for query in &queries {
-        println!("\nQuery: {}", query);
+        println!("\nQuery: {query}");
 
         match parse_sql(query) {
             Ok(parsed_query) => match execute_query(&parsed_query) {
@@ -321,11 +281,11 @@ fn pattern_matching(dir_path: &Path) {
                     }
                 }
                 Err(err) => {
-                    eprintln!("Error executing query: {}", err);
+                    eprintln!("Error executing query: {err}");
                 }
             },
             Err(err) => {
-                eprintln!("Error parsing SQL query: {}", err);
+                eprintln!("Error parsing SQL query: {err}");
             }
         }
     }
@@ -337,7 +297,7 @@ fn recursive_queries(dir_path: &Path) {
         "WITH RECURSIVE SELECT * FROM {} WHERE extension = 'txt'",
         dir_path.display()
     );
-    println!("Query: {}", query);
+    println!("Query: {query}");
 
     match parse_sql(&query) {
         Ok(parsed_query) => match execute_query(&parsed_query) {
@@ -348,11 +308,11 @@ fn recursive_queries(dir_path: &Path) {
                 }
             }
             Err(err) => {
-                eprintln!("Error executing query: {}", err);
+                eprintln!("Error executing query: {err}");
             }
         },
         Err(err) => {
-            eprintln!("Error parsing SQL query: {}", err);
+            eprintln!("Error parsing SQL query: {err}");
         }
     }
 }
@@ -365,7 +325,7 @@ fn update_queries(dir_path: &Path) {
         "UPDATE {} SET permissions = '755' WHERE extension = 'sh'",
         dir_path.display()
     );
-    println!("Query: {}", query);
+    println!("Query: {query}");
 
     match parse_sql(&query) {
         Ok(parsed_query) => match execute_query(&parsed_query) {
@@ -380,11 +340,11 @@ fn update_queries(dir_path: &Path) {
                 }
             }
             Err(err) => {
-                eprintln!("Error executing query: {}", err);
+                eprintln!("Error executing query: {err}");
             }
         },
         Err(err) => {
-            eprintln!("Error parsing SQL query: {}", err);
+            eprintln!("Error parsing SQL query: {err}");
         }
     }
 }

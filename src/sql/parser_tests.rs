@@ -20,7 +20,7 @@ fn test_parse_select_all() {
             assert!(matches!(attributes[0], FileAttribute::All));
             assert!(condition.is_none());
         }
-        _ => panic!("Expected SELECT query"),
+        FileQuery::Update { .. } => panic!("Expected SELECT query"),
     }
 }
 
@@ -54,7 +54,7 @@ fn test_parse_select_with_condition() {
                 _ => panic!("Expected Compare condition"),
             }
         }
-        _ => panic!("Expected SELECT query"),
+        FileQuery::Update { .. } => panic!("Expected SELECT query"),
     }
 }
 
@@ -95,14 +95,16 @@ fn test_parse_select_with_complex_condition() {
 
                         assert!(matches!(attr2, FileAttribute::Size));
                         assert!(matches!(op2, ComparisonOperator::Gt));
-                        assert!(matches!(val2, FileValue::Number(n) if n == 1000.0));
+                        assert!(
+                            matches!(val2, FileValue::Number(n) if (n - 1000.0).abs() < f64::EPSILON)
+                        );
                     }
                     _ => panic!("Expected two Compare conditions"),
                 },
                 _ => panic!("Expected AND condition"),
             }
         }
-        _ => panic!("Expected SELECT query"),
+        FileQuery::Update { .. } => panic!("Expected SELECT query"),
     }
 }
 
@@ -136,7 +138,7 @@ fn test_parse_select_with_between() {
                 _ => panic!("Expected BETWEEN condition"),
             }
         }
-        _ => panic!("Expected SELECT query"),
+        FileQuery::Update { .. } => panic!("Expected SELECT query"),
     }
 }
 
@@ -170,7 +172,7 @@ fn test_parse_select_with_like() {
                 _ => panic!("Expected LIKE condition"),
             }
         }
-        _ => panic!("Expected SELECT query"),
+        FileQuery::Update { .. } => panic!("Expected SELECT query"),
     }
 }
 
@@ -200,13 +202,12 @@ fn test_parse_select_with_like_pattern_variations() {
                     assert_eq!(pattern, expected_pattern);
                     assert!(
                         !case_sensitive,
-                        "Expected case_sensitive to be false for: {}",
-                        sql
+                        "Expected case_sensitive to be false for: {sql}"
                     );
                 }
-                _ => panic!("Expected LIKE condition for SQL: {}", sql),
+                _ => panic!("Expected LIKE condition for SQL: {sql}"),
             },
-            _ => panic!("Expected SELECT query for SQL: {}", sql),
+            FileQuery::Update { .. } => panic!("Expected SELECT query for SQL: {sql}"),
         }
     }
 }
@@ -236,7 +237,7 @@ fn test_parse_select_with_regexp() {
                 _ => panic!("Expected REGEXP condition"),
             }
         }
-        _ => panic!("Expected SELECT query"),
+        FileQuery::Update { .. } => panic!("Expected SELECT query"),
     }
 }
 
@@ -270,7 +271,7 @@ fn test_parse_select_with_recursive() {
                 _ => panic!("Expected LIKE condition"),
             }
         }
-        _ => panic!("Expected SELECT query"),
+        FileQuery::Update { .. } => panic!("Expected SELECT query"),
     }
 }
 
@@ -306,7 +307,7 @@ fn test_parse_update() {
                 _ => panic!("Expected Compare condition"),
             }
         }
-        _ => panic!("Expected UPDATE query"),
+        FileQuery::Select { .. } => panic!("Expected UPDATE query"),
     }
 }
 
