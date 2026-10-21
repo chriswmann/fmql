@@ -6,7 +6,10 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
-use fmql::output::render_text;
+use fmql::FMQLError;
+use fmql::output::{columns_json, render_columns, render_text};
+use fmql::sql::ast::{FileAttribute, FileQuery};
+use fmql::sql::{execute_query, parse_sql};
 
 /// Command-line arguments for the SQL mode
 #[derive(Parser, Debug)]
@@ -61,10 +64,22 @@ fn main() -> ExitCode {
 
 /// Run the application in SQL mode
 fn run_sql_mode(args: &SqlCommand) -> Result<(), Box<dyn std::error::Error>> {
-    let results = fmql::query(&args.query)?;
-    match args.format {
-        Format::Json => println!("{}", serde_json::to_string_pretty(&results)?),
-        Format::Text => print!("{}", render_text(&results)),
+    let query = parse_sql(&args.query).map_err(FMQLError::from)?;
+    let results = execute_query(&query).map_err(FMQLError::from)?;
+    let columns = match &query {
+        FileQuery::Select { attributes, .. } if attributes != &[FileAttribute::All] => {
+            Some(attributes.as_slice())
+        }
+        _ => None,
+    };
+    match (args.format, columns) {
+        (Format::Json, None) => println!("{}", serde_json::to_string_pretty(&results)?),
+        (Format::Json, Some(columns)) => println!(
+            "{}",
+            serde_json::to_string_pretty(&columns_json(&results, columns))?
+        ),
+        (Format::Text, None) => print!("{}", render_text(&results)),
+        (Format::Text, Some(columns)) => print!("{}", render_columns(&results, columns)),
     }
     Ok(())
 }

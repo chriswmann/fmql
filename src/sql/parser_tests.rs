@@ -480,3 +480,24 @@ fn bare_boolean_attributes_test_for_true() {
         );
     }
 }
+
+#[test]
+fn projections_keep_their_order() {
+    let FileQuery::Select { attributes, .. } =
+        parse_sql("SELECT Path, size, IS_SYMLINK FROM .").unwrap()
+    else {
+        panic!("expected SELECT");
+    };
+    assert_eq!(
+        attributes,
+        [
+            FileAttribute::Path,
+            FileAttribute::Size,
+            FileAttribute::IsSymlink
+        ]
+    );
+    assert!(matches!(
+        parse_sql("SELECT name, name FROM ."),
+        Err(crate::sql::parser::ParserError::DuplicateColumn(column)) if column == "name"
+    ));
+}

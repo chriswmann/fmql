@@ -38,7 +38,8 @@ sql string ──parse_sql()──▶ FileQuery (AST) ──execute_query()─�
   `.` etc. in identifiers.
 - `src/error.rs` — `FMQLError`, wrapping `ParserError` and `ExecutorError` via `#[from]`.
   `fmql::query()` (in `lib.rs`) parses and executes in one call and returns it.
-- `src/output.rs` — `render_text()`, the CLI's `ls -l` style text output.
+- `src/output.rs` — `render_text()` (`ls -l` style lines for `SELECT *`) and the
+  projected `render_columns()` / `columns_json()`.
 - `src/main.rs` — `clap` CLI with one subcommand, `sql`, and a `--format text|json` flag.
   Errors go to stderr with exit code 1; clap usage errors exit with 2.
 
@@ -59,7 +60,9 @@ temporary directories, including rejected updates that must not change files.
   permissions before execution, even for empty directories or unused branches.
 - `SELECT` supports `ORDER BY` (stable sort, nulls last ascending) and `LIMIT`;
   traversal visits entries by file name, so unordered output is deterministic.
-  `GROUP BY`, `OFFSET`, projection and ownership/rename updates are rejected.
+  `SELECT a, b` projects columns; the executor still returns whole `FileResult`s
+  and `output.rs` (`render_columns`, `columns_json`) applies the projection.
+  `GROUP BY`, `OFFSET`, select-list expressions and ownership/rename updates are rejected.
   The README documents the supported subset.
 - The executor compiles a condition into a private `Predicate` before listing
   files, checking attributes, operand types and patterns in every branch, so a

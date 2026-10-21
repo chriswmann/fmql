@@ -63,8 +63,10 @@ fmql sql "UPDATE ~/scripts SET permissions = '755' WHERE extension = 'sh'"
 
 FMQL understands these SQL-ish commands:
 
-- `SELECT * FROM path [WHERE condition] [ORDER BY attribute [ASC|DESC], ...] [LIMIT n]`:
-  Find matching files and directories. Without `ORDER BY`, each directory's
+- `SELECT * | attribute, ... FROM path [WHERE condition] [ORDER BY attribute [ASC|DESC], ...] [LIMIT n]`:
+  Find matching files and directories. `SELECT *` prints `ls -l` style lines
+  (or every field with `--format json`); naming attributes, as in
+  `SELECT name, size FROM .`, prints just those columns, in that order. Without `ORDER BY`, each directory's
   entries are listed by name. `ORDER BY` accepts any filter attribute; nulls sort
   last in ascending order and first in descending order. `LIMIT` applies after
   sorting.
@@ -104,7 +106,7 @@ embedded apostrophe. SQL comments and one optional trailing semicolon are allowe
 
 The parser uses `sqlparser` for tokens and expressions and requires the whole
 query to be understood before execution. Unsupported queries return an error:
-this includes projections other than `*`, grouping, `OFFSET`, joins,
+this includes expressions or aliases in the select list, grouping, `OFFSET`, joins,
 subqueries, multiple statements and ownership/rename updates.
 Malformed predicates, incompatible literal types and invalid regexes are also
 rejected, including on empty directories. Filesystem failures during an accepted
