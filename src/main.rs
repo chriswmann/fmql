@@ -2,7 +2,9 @@
 //!
 //! This crate provides a command-line tool for managing files using a SQL-like query language.
 
+use std::error::Error;
 use std::ffi::OsString;
+use std::io::{BufRead, IsTerminal, Write};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command as Process, ExitCode};
@@ -12,7 +14,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use fmql::FMQLError;
 use fmql::output::{columns_json, render_columns, render_table, render_text, table_json};
 use fmql::sql::ast::{FileAttribute, FileQuery};
-use fmql::sql::{execute_grouped, execute_query, parse_sql_with_home};
+use fmql::sql::{execute_grouped, execute_query, parse_sql_with_home, plan_update};
 
 /// Command-line arguments for the SQL mode
 #[derive(Parser, Debug)]
@@ -27,6 +29,14 @@ struct SqlCommand {
     /// Output format
     #[arg(short, long, value_enum, default_value_t = Format::Text)]
     format: Format,
+
+    /// Show the entries an UPDATE would update, without changing anything
+    #[arg(long)]
+    dry_run: bool,
+
+    /// Run a recursive UPDATE as root without asking first
+    #[arg(short, long)]
+    yes: bool,
 }
 
 /// How results are written to standard output.
@@ -129,8 +139,42 @@ fn without_sudo(args: impl Iterator<Item = OsString>) -> Vec<OsString> {
     .collect()
 }
 
+/// Whether to ask before running `query`: a recursive update as root can
+/// change a whole tree of other users' files.
+fn needs_confirmation(query: &FileQuery, yes: bool, is_root: bool) -> bool {
+    matches!(
+        query,
+        FileQuery::Update {
+            recursive: true,
+            ..
+        }
+    ) && is_root
+        && !yes
+}
+
+/// Asks `question` on `output` and reads a yes or no from `input`. Without a
+/// terminal to answer on, it refuses rather than read an answer from a pipe.
+fn confirm(
+    question: &str,
+    input: &mut impl BufRead,
+    interactive: bool,
+    output: &mut impl Write,
+) -> Result<bool, Box<dyn Error>> {
+    if !interactive {
+        return Err(format!("{question} Pass --yes to confirm without a terminal").into());
+    }
+    write!(output, "{question} [y/N] ")?;
+    output.flush()?;
+    let mut answer = String::new();
+    input.read_line(&mut answer)?;
+    Ok(matches!(
+        answer.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
+}
+
 /// Run the application in SQL mode
-fn run_sql_mode(args: &SqlCommand, home: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
+fn run_sql_mode(args: &SqlCommand, home: Option<&Path>) -> Result<(), Box<dyn Error>> {
     let query = parse_sql_with_home(&args.query, home).map_err(FMQLError::from)?;
     if let FileQuery::Group { .. } = query {
         let table = execute_grouped(&query).map_err(FMQLError::from)?;
@@ -140,7 +184,42 @@ fn run_sql_mode(args: &SqlCommand, home: Option<&Path>) -> Result<(), Box<dyn st
         }
         return Ok(());
     }
-    let results = execute_query(&query).map_err(FMQLError::from)?;
+    let results = if args.dry_run && matches!(query, FileQuery::Update { .. }) {
+        let planned = plan_update(&query).map_err(FMQLError::from)?;
+        eprintln!("Dry run: nothing was changed");
+        planned
+    } else if needs_confirmation(&query, args.yes, nix::unistd::geteuid().is_root()) {
+        let FileQuery::Update { path, .. } = &query else {
+            unreachable!("only updates need confirmation")
+        };
+        let planned = plan_update(&query).map_err(FMQLError::from)?;
+        if planned.is_empty() {
+            // Nothing to ask about, so nothing runs unasked either.
+            planned
+        } else {
+            let count = planned.len();
+            let entries = if count == 1 { "entry" } else { "entries" };
+            let question = format!(
+                "Update {count} matching {entries} under {} as root?",
+                path.display()
+            );
+            let stdin = std::io::stdin();
+            let interactive = stdin.is_terminal();
+            if !confirm(
+                &question,
+                &mut stdin.lock(),
+                interactive,
+                &mut std::io::stderr(),
+            )? {
+                return Err("Cancelled: nothing was changed".into());
+            }
+            // The count is a preview: like any update, this reads the tree
+            // again and changes whatever matches now.
+            execute_query(&query).map_err(FMQLError::from)?
+        }
+    } else {
+        execute_query(&query).map_err(FMQLError::from)?
+    };
     let columns = match &query {
         FileQuery::Select { attributes, .. } if attributes != &[FileAttribute::All] => {
             Some(attributes.as_slice())

@@ -205,6 +205,64 @@ pub fn execute_query(query: &FileQuery) -> Result<Vec<FileResult>> {
     }
 }
 
+/// Reports what an `UPDATE` would do without changing anything: the
+/// entries [`execute_query`] would return, with their new names, owner and
+/// permissions. On Linux, the setuid and setgid bits that a change of owner
+/// would clear are shown cleared.
+///
+/// # Errors
+///
+/// Returns an error if the query is not an `UPDATE`, or for any error the
+/// update would report before changing a file, such as an unknown owner or a
+/// rename conflict.
+///
+/// # Examples
+///
+/// ```no_run
+/// use fmql::sql::{parse_sql, plan_update};
+///
+/// let query = parse_sql("UPDATE . SET permissions = '600'").unwrap();
+/// for file in plan_update(&query).unwrap() {
+///     println!("would change {}", file.path.display());
+/// }
+/// ```
+pub fn plan_update(query: &FileQuery) -> Result<Vec<FileResult>> {
+    let FileQuery::Update {
+        path,
+        recursive,
+        updates,
+        condition,
+    } = query
+    else {
+        return Err(ExecutorError::UnsupportedOperation(
+            "only an UPDATE can be planned".to_string(),
+        ));
+    };
+    // With nothing applied, the metadata read after a change of owner sees a
+    // file's current bits, or nothing at a rename's still unused destination,
+    // so the listed bits stand until projected below.
+    let mut planned = update_with(path, *recursive, updates, condition.as_ref(), |_, _| Ok(()))?;
+    let changes = Changes::plan(updates)?;
+    // A new mode is applied after the owner, so it is what the update leaves.
+    if cfg!(target_os = "linux") && changes.owner.is_some() && changes.mode.is_none() {
+        for file in planned.iter_mut().filter(|file| !file.is_directory) {
+            file.permissions = owner_change_mode(file.permissions);
+        }
+    }
+    Ok(planned)
+}
+
+/// The mode Linux leaves after a change of owner on anything but a
+/// directory: setuid goes, and setgid goes when group execute is set too
+/// (without it, setgid marks mandatory locking and stays).
+fn owner_change_mode(mode: u32) -> u32 {
+    let mut mode = mode & !0o4000;
+    if mode & 0o2010 == 0o2010 {
+        mode &= !0o2000;
+    }
+    mode
+}
+
 /// Executes a SELECT query.
 fn execute_select(
     path: &Path,

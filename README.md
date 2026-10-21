@@ -202,6 +202,21 @@ nothing. `~` in the query still means your home directory, not root's.
 fmql --sudo sql "WITH RECURSIVE UPDATE ~/shared SET owner = 'alice'"
 ```
 
+Add `--dry-run` to any `UPDATE` to print every entry it would update, with
+their new names, owner and permissions, and change nothing. An entry that
+already has the new values is still listed, because the update still applies
+them: setting even the same owner clears setuid and setgid bits, and on Linux
+the dry run shows them cleared. As root, a `WITH RECURSIVE` update says how many
+matching entries it would update and asks before going ahead (the count is a
+preview: the update then reads the tree again, so entries created or changed
+in between count too);
+`--yes` (`-y`) skips the question, and without a terminal to ask on, fmql
+refuses unless given `--yes`.
+
+```bash
+fmql --sudo sql "WITH RECURSIVE UPDATE /srv/www SET owner = 'www'" --dry-run
+```
+
 ## 🤝 Contributing
 
 1. Question your life choices

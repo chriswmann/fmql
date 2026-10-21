@@ -872,3 +872,66 @@ fn cli_empty_home_leaves_tilde_unexpanded() {
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains('~'), "{stderr}");
 }
+
+#[test]
+fn cli_dry_run_reports_an_update_without_changing_files() {
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("a.txt");
+    fs::write(&file, "").unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+    let sql = format!(
+        "UPDATE {} SET permissions = '600', name = CONCAT('n_', name)",
+        dir.path().display()
+    );
+
+    let output = fmql(&["sql", &sql, "--dry-run", "--format", "json"]);
+
+    assert!(output.status.success(), "{output:?}");
+    let planned: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(planned[0]["name"], "n_a.txt");
+    assert_eq!(planned[0]["permissions"].as_u64().unwrap() & 0o7777, 0o600);
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "Dry run: nothing was changed\n"
+    );
+    assert_eq!(mode(&file), 0o644);
+    assert!(!dir.path().join("n_a.txt").exists());
+}
+
+#[test]
+fn cli_dry_run_still_reports_update_errors() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("a.txt"), "").unwrap();
+    let sql = format!(
+        "UPDATE {} SET owner = 'no-such-user-fmql'",
+        dir.path().display()
+    );
+
+    let output = fmql(&["sql", &sql, "--dry-run"]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("no-such-user-fmql")
+    );
+}
+
+#[test]
+fn cli_yes_runs_a_recursive_update_without_asking() {
+    let dir = TempDir::new().unwrap();
+    fs::create_dir(dir.path().join("sub")).unwrap();
+    let file = dir.path().join("sub/a.txt");
+    fs::write(&file, "").unwrap();
+    let sql = format!(
+        "WITH RECURSIVE UPDATE {} SET permissions = '600' WHERE NOT is_directory",
+        dir.path().display()
+    );
+
+    // Without a terminal on standard input, asking would refuse, so this
+    // passes as root too.
+    let output = fmql(&["sql", &sql, "--yes"]);
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(mode(&file), 0o600);
+}
