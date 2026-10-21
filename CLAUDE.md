@@ -67,8 +67,10 @@ temporary directories, including rejected updates that must not change files.
 - The executor compiles a condition into a private `Predicate` before listing
   files, checking attributes, operand types and patterns in every branch, so a
   hand-built `FileQuery` fails with an `ExecutorError` instead of matching
-  nothing. Update values are validated before any file changes. Accepted updates
-  can still partially apply if a later filesystem operation fails.
+  nothing. Update values are validated before any file changes. `apply_mode`
+  rolls back earlier permission changes when one fails (`UpdateFailed`), naming
+  any it cannot restore (`RollbackFailed`). It takes the setter as a closure so
+  tests can inject failures.
 - Updates skip symbolic links so they cannot change files outside the queried
   directory. Listing reads metadata through links, falling back to the link itself.
 - `OVERHAUL_PLAN.md` retains the original review as history.

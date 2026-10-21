@@ -109,8 +109,9 @@ query to be understood before execution. Unsupported queries return an error:
 this includes expressions or aliases in the select list, grouping, `OFFSET`, joins,
 subqueries, multiple statements and ownership/rename updates.
 Malformed predicates, incompatible literal types and invalid regexes are also
-rejected, including on empty directories. Filesystem failures during an accepted
-update can still leave earlier files changed; updates are not transactional.
+rejected, including on empty directories. If changing one file's permissions
+fails, the files already changed get their previous permissions back and the
+error says so; if a restore also fails, the error names the files left changed.
 
 Symbolic links are listed but never followed into, and their attributes describe
 the target (or the link itself when the target is missing). Updates skip
