@@ -105,6 +105,10 @@ fn display_paths(paths: &[PathBuf]) -> String {
         .join(", ")
 }
 
+mod group;
+
+pub use group::{Table, execute_grouped};
+
 /// Result type for executor operations.
 pub type Result<T> = std::result::Result<T, ExecutorError>;
 
@@ -196,7 +200,7 @@ pub fn execute_query(query: &FileQuery) -> Result<Vec<FileResult>> {
             condition,
         } => execute_update(path, *recursive, updates, condition.as_ref()),
         FileQuery::Group { .. } => Err(ExecutorError::UnsupportedOperation(
-            "grouped queries are not executed yet".to_string(),
+            "grouped queries return rows, not files; use execute_grouped".to_string(),
         )),
     }
 }
