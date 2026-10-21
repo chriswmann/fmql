@@ -1,37 +1,35 @@
-//! Error handling module for the file manager.
+//! The crate-wide error type.
 //!
-//! This module defines the error types and result type used throughout the application.
-//! It provides a consistent error handling approach using the `thiserror` crate to
-//! implement error types that are both user-friendly and programmatically useful.
-//!
-//! # Examples
+//! Parsing and execution keep their own error enums, [`ParserError`] and
+//! [`ExecutorError`]. [`FMQLError`] wraps both so callers that run a query
+//! from start to finish, such as [`crate::query`] and the CLI, handle one type.
 
 use thiserror::Error;
 
-/// Comprehensive error type for file manager operations.
-///
-/// This enum represents all possible errors that can occur during file operations,
-/// including IO errors, invalid patterns, and missing paths.
+use crate::sql::executor::ExecutorError;
+use crate::sql::parser::ParserError;
+
+/// An error from parsing or executing a query.
 ///
 /// # Examples
-///
-/// Creating and handling different error types:
 ///
 /// ```
 /// use fmql::error::FMQLError;
 ///
-/// // Creating an IoError
-/// let io_error = FMQLError::IoError(std::io::Error::new(std::io::ErrorKind::NotFound, "File not found"));
-/// assert!(format!("{}", io_error).contains("IO error"));
+/// let err = fmql::query("DELETE FROM .").unwrap_err();
+/// assert!(matches!(err, FMQLError::Parse(_)));
+/// assert!(err.to_string().starts_with("Error parsing SQL query"));
 /// ```
 #[derive(Error, Debug)]
 pub enum FMQLError {
-    /// Error when a specified path doesn't exist or is inaccessible.
-    ///
+    /// The query was malformed or uses unsupported syntax.
+    #[error("Error parsing SQL query: {0}")]
+    Parse(#[from] ParserError),
 
-    /// Error from underlying IO operations.
-    ///
-    /// This wraps standard IO errors from the Rust standard library.
-    #[error("IO error: {0}")]
-    IoError(#[from] std::io::Error),
+    /// The query was valid but could not be carried out.
+    #[error("Error executing query: {0}")]
+    Execute(#[from] ExecutorError),
 }
+
+/// Result type for operations that parse and execute a query.
+pub type Result<T> = std::result::Result<T, FMQLError>;

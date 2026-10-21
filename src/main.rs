@@ -2,10 +2,11 @@
 //!
 //! This crate provides a command-line tool for managing files using a SQL-like query language.
 
-use clap::{Parser, Subcommand};
-use std::process;
+use std::process::ExitCode;
 
-use fmql::sql::{execute_query, parse_sql};
+use clap::{Parser, Subcommand, ValueEnum};
+
+use fmql::output::render_text;
 
 /// Command-line arguments for the SQL mode
 #[derive(Parser, Debug)]
@@ -13,13 +14,22 @@ use fmql::sql::{execute_query, parse_sql};
 struct SqlCommand {
     /// SQL query to execute
     #[arg(
-        help = "SQL query to execute (e.g., \"SELECT * FROM ~/Documents WHERE extension = '.txt'\""
+        help = "SQL query to execute (e.g., \"SELECT * FROM ~/Documents WHERE extension = 'txt'\")"
     )]
     query: String,
 
-    /// Output format (text or json)
-    #[arg(short, long, default_value = "text")]
-    format: String,
+    /// Output format
+    #[arg(short, long, value_enum, default_value_t = Format::Text)]
+    format: Format,
+}
+
+/// How results are written to standard output.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum Format {
+    /// One `ls -l` style line per entry.
+    Text,
+    /// A JSON array of entries.
+    Json,
 }
 
 /// Command-line arguments for the main application
@@ -36,48 +46,25 @@ enum Command {
     Sql(SqlCommand),
 }
 
-fn main() {
-    let args = AppArgs::parse();
-
-    match args.command {
-        Command::Sql(sql_args) => {
-            // Run in SQL mode
-            run_sql_mode(&sql_args);
+fn main() -> ExitCode {
+    let AppArgs {
+        command: Command::Sql(args),
+    } = AppArgs::parse();
+    match run_sql_mode(&args) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("{err}");
+            ExitCode::FAILURE
         }
     }
 }
 
 /// Run the application in SQL mode
-fn run_sql_mode(args: &SqlCommand) {
-    match parse_sql(&args.query) {
-        Ok(query) => {
-            match execute_query(&query) {
-                Ok(results) => {
-                    if args.format.as_str() == "json" {
-                        println!(
-                            "{}",
-                            serde_json::to_string_pretty(&results).unwrap_or_else(|e| {
-                                eprintln!("Error serializing results: {e}");
-                                process::exit(1);
-                            })
-                        );
-                    } else {
-                        // Default to text output
-                        println!("{} results found:", results.len());
-                        for result in &results {
-                            println!("{}: {} bytes", result.path.display(), result.size);
-                        }
-                    }
-                }
-                Err(err) => {
-                    eprintln!("Error executing query: {err}");
-                    process::exit(1);
-                }
-            }
-        }
-        Err(err) => {
-            eprintln!("Error parsing SQL query: {err}");
-            process::exit(1);
-        }
+fn run_sql_mode(args: &SqlCommand) -> Result<(), Box<dyn std::error::Error>> {
+    let results = fmql::query(&args.query)?;
+    match args.format {
+        Format::Json => println!("{}", serde_json::to_string_pretty(&results)?),
+        Format::Text => print!("{}", render_text(&results)),
     }
+    Ok(())
 }
