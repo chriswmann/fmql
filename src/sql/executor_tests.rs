@@ -1153,3 +1153,73 @@ fn test_owner_and_rename_report_permissions_read_at_the_new_path() {
         fs::metadata(&renamed).unwrap().permissions().mode()
     );
 }
+
+#[test]
+#[cfg(unix)]
+fn test_apply_op_does_not_follow_symbolic_links() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+
+    let dir = tempdir().unwrap();
+    let target = create_test_file(dir.path(), "target", "x").unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+    let link = dir.path().join("link");
+    symlink(&target, &link).unwrap();
+    let dangling = dir.path().join("dangling");
+    symlink(dir.path().join("missing"), &dangling).unwrap();
+
+    // A link swapped in after planning must not pass the change to its target.
+    // Linux cannot change a link's own mode, so it refuses; macOS changes the
+    // link itself.
+    let result = super::apply_op(&link, &Op::SetMode(0o600));
+    #[cfg(target_os = "linux")]
+    assert!(result.is_err());
+    #[cfg(not(target_os = "linux"))]
+    let _ = result;
+    assert_eq!(
+        fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+        0o644
+    );
+    // Changing the owner acts on the link itself, so even a dangling one works.
+    let uid = fs::symlink_metadata(&dangling).unwrap().uid();
+    super::apply_op(&dangling, &Op::SetOwner(uid)).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn test_apply_op_sets_the_mode_of_a_regular_file() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempdir().unwrap();
+    let file = create_test_file(dir.path(), "file", "x").unwrap();
+
+    super::apply_op(&file, &Op::SetMode(0o640)).unwrap();
+
+    assert_eq!(
+        fs::metadata(&file).unwrap().permissions().mode() & 0o7777,
+        0o640
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn test_chmod_through_descriptor_refuses_links_and_needs_no_read_permission() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    let dir = tempdir().unwrap();
+    let file = create_test_file(dir.path(), "file", "x").unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+    let link = dir.path().join("link");
+    symlink(&file, &link).unwrap();
+
+    assert!(super::chmod_through_descriptor(&link, 0o777).is_err());
+    assert_eq!(
+        fs::metadata(&file).unwrap().permissions().mode() & 0o7777,
+        0
+    );
+    // The owner may change the mode of a file they cannot read.
+    super::chmod_through_descriptor(&file, 0o640).unwrap();
+    assert_eq!(
+        fs::metadata(&file).unwrap().permissions().mode() & 0o7777,
+        0o640
+    );
+}

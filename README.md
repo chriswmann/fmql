@@ -148,7 +148,12 @@ names the files left changed.
 
 Symbolic links are listed but never followed into, and their attributes describe
 the target (or the link itself when the target is missing). Updates skip
-symbolic links, so `UPDATE` cannot change a file outside the directory it names.
+symbolic links, so `UPDATE` cannot change a file outside the directory it names,
+and an owner or permission change refuses to follow a link that replaced a file
+while the update ran. That protection covers the entry itself, not the
+directories above it: someone who can write inside the tree could still swap a
+directory for a link mid-update, so as root, avoid recursive updates over trees
+that other users can write to.
 
 ## Examples
 
