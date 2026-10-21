@@ -26,7 +26,10 @@ The review below is historical; every numbered item is now resolved.
 - #13: `UPDATE ... SET owner = 'name'`, alone or with `permissions`; rollback
   restores both owner and mode.
 
-Still out of scope: `GROUP BY` and rename updates.
+- #14: `UPDATE ... SET name = expression` renames entries in place, with
+  validation, conflict checks and rollback.
+
+Still out of scope: `GROUP BY`.
 
 ## 1. Review summary
 

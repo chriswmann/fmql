@@ -17,7 +17,7 @@ use walkdir::WalkDir;
 
 use crate::sql::ast::{
     ComparisonOperator, FileAttribute, FileAttributeUpdate, FileCondition, FileQuery, FileValue,
-    OrderBy,
+    NameExpr, OrderBy, UpdateValue,
 };
 
 /// Errors that can occur during query execution.
@@ -46,6 +46,30 @@ pub enum ExecutorError {
     /// An owner named in an update is not in the user database.
     #[error("Unknown user: {0}")]
     UnknownUser(String),
+
+    /// A computed new name is not usable.
+    #[error("Cannot rename {} to '{name}': {reason}", path.display())]
+    InvalidName {
+        /// The file being renamed.
+        path: PathBuf,
+        /// The computed name.
+        name: String,
+        /// Why it was rejected.
+        reason: String,
+    },
+
+    /// A rename would overwrite another entry or share a destination.
+    #[error(
+        "Cannot rename {} to {}: it already exists or another rename uses it",
+        path.display(),
+        target.display()
+    )]
+    RenameConflict {
+        /// The file being renamed.
+        path: PathBuf,
+        /// The destination.
+        target: PathBuf,
+    },
 
     /// An update failed part way; every earlier change was undone.
     #[error("Failed to update {}: {source}; earlier changes were rolled back", path.display())]
@@ -234,7 +258,7 @@ fn update_with(
     recursive: bool,
     updates: &[FileAttributeUpdate],
     condition: Option<&FileCondition>,
-    apply: impl FnMut(&Path, Op) -> std::io::Result<()>,
+    apply: impl FnMut(&Path, &Op) -> std::io::Result<()>,
 ) -> Result<Vec<FileResult>> {
     let changes = Changes::plan(updates)?;
     let predicate = condition.map(Predicate::compile).transpose()?;
@@ -248,11 +272,36 @@ fn update_with(
         // lie outside the queried directory, so links are never updated.
         .filter(|file| !file.is_symlink)
         .collect();
+    let renames = changes.renames(&targets)?;
     let paths: Vec<PathBuf> = targets.iter().map(|file| file.path.clone()).collect();
-    apply_changes(&paths, &changes, apply)?;
+    apply_changes(&paths, &changes, &renames, apply)?;
 
+    // Renames ran deepest first, so replaying them in order also moves the
+    // reported paths of entries inside renamed directories.
+    for (from, to) in &renames {
+        for file in &mut targets {
+            let Ok(rest) = file.path.strip_prefix(from).map(Path::to_path_buf) else {
+                continue;
+            };
+            if rest.as_os_str().is_empty() {
+                // `join("")` would add a trailing separator.
+                file.path.clone_from(to);
+                file.name = file
+                    .path
+                    .file_name()
+                    .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                file.extension = file
+                    .path
+                    .extension()
+                    .map(|ext| ext.to_string_lossy().into_owned());
+            } else {
+                file.path = to.join(rest);
+            }
+        }
+    }
     // Update the listed results rather than re-reading metadata, so a
-    // successful update cannot then fail.
+    // successful update cannot then fail. This follows the renames so that
+    // the one metadata read below uses each file's new path.
     for file in &mut targets {
         if let Some((_, name)) = &changes.owner {
             file.owner = Some(name.clone());
@@ -269,20 +318,59 @@ fn update_with(
 }
 
 /// One filesystem change made by an update.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Op {
     /// Set the permission bits.
     SetMode(u32),
     /// Set the owning uid, leaving the group alone.
     SetOwner(u32),
+    /// Move the file to this path, in the same directory.
+    Rename(PathBuf),
 }
 
 /// Applies an [`Op`] to the real filesystem.
-fn apply_op(path: &Path, op: Op) -> std::io::Result<()> {
+fn apply_op(path: &Path, op: &Op) -> std::io::Result<()> {
     match op {
-        Op::SetMode(mode) => fs::set_permissions(path, Permissions::from_mode(mode)),
-        Op::SetOwner(uid) => std::os::unix::fs::chown(path, Some(uid), None),
+        Op::SetMode(mode) => fs::set_permissions(path, Permissions::from_mode(*mode)),
+        Op::SetOwner(uid) => std::os::unix::fs::chown(path, Some(*uid), None),
+        Op::Rename(to) => rename_no_replace(path, to),
     }
+}
+
+/// Renames `from` to `to`, failing with `AlreadyExists` rather than replacing
+/// an entry that appeared after the update was planned, such as one created
+/// by another process or a case-only collision on a case-insensitive
+/// filesystem. The kernel enforces this where it can.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn rename_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    use nix::errno::Errno;
+    use nix::fcntl::{AT_FDCWD, RenameFlags, renameat2};
+
+    match renameat2(AT_FDCWD, from, AT_FDCWD, to, RenameFlags::RENAME_NOREPLACE) {
+        Ok(()) => Ok(()),
+        // A case-only rename of the same file on a case-insensitive filesystem.
+        Err(Errno::EEXIST) if !occupied(from, to) => fs::rename(from, to),
+        // The filesystem cannot refuse to replace, so check first instead.
+        Err(Errno::EINVAL | Errno::ENOSYS) => checked_rename(from, to),
+        Err(errno) => Err(errno.into()),
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn rename_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    checked_rename(from, to)
+}
+
+/// Renames unless `to` names another entry. Another process can still create
+/// `to` between the check and the rename; this only narrows that window.
+fn checked_rename(from: &Path, to: &Path) -> std::io::Result<()> {
+    if occupied(from, to) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("{} already exists", to.display()),
+        ));
+    }
+    fs::rename(from, to)
 }
 
 /// The validated effect of an update's assignments. Later assignments to the
@@ -291,25 +379,31 @@ fn apply_op(path: &Path, op: Op) -> std::io::Result<()> {
 struct Changes {
     mode: Option<u32>,
     owner: Option<(u32, String)>,
+    name: Option<NameExpr>,
 }
 
 impl Changes {
     fn plan(updates: &[FileAttributeUpdate]) -> Result<Self> {
         let mut changes = Self::default();
         for update in updates {
-            match update.attribute {
-                FileAttribute::Permissions => changes.mode = Some(permission_mode(&update.value)?),
-                FileAttribute::Owner => {
-                    let user = User::from_name(&update.value)
+            match (&update.attribute, &update.value) {
+                (FileAttribute::Permissions, UpdateValue::Literal(value)) => {
+                    changes.mode = Some(permission_mode(value)?);
+                }
+                (FileAttribute::Owner, UpdateValue::Literal(value)) => {
+                    let user = User::from_name(value)
                         .ok()
                         .flatten()
-                        .ok_or_else(|| ExecutorError::UnknownUser(update.value.clone()))?;
+                        .ok_or_else(|| ExecutorError::UnknownUser(value.clone()))?;
                     changes.owner = Some((user.uid.as_raw(), user.name));
                 }
-                _ => {
+                (FileAttribute::Name, UpdateValue::Name(expr)) => {
+                    check_name_expr(expr)?;
+                    changes.name = Some(expr.clone());
+                }
+                (attribute, value) => {
                     return Err(ExecutorError::UnsupportedAttribute(format!(
-                        "Cannot update attribute: {:?}",
-                        update.attribute
+                        "Cannot update attribute {attribute:?} with {value:?}"
                     )));
                 }
             }
@@ -318,77 +412,205 @@ impl Changes {
     }
 
     fn is_empty(&self) -> bool {
-        self.mode.is_none() && self.owner.is_none()
+        self.mode.is_none() && self.owner.is_none() && self.name.is_none()
     }
 
-    /// The operations for one file. Ownership goes first because `chown` can
-    /// clear the setuid and setgid bits that a new mode might set.
+    /// The attribute operations for one file. Ownership goes first because
+    /// `chown` can clear the setuid and setgid bits that a new mode might set.
     fn ops(&self) -> impl Iterator<Item = Op> {
         self.owner
             .iter()
             .map(|(uid, _)| Op::SetOwner(*uid))
             .chain(self.mode.map(Op::SetMode))
     }
+
+    /// Computes and checks each target's new path, deepest first so a
+    /// directory is renamed only after the entries inside it. Unchanged names
+    /// are left out. Fails, before anything changes, on an invalid name or a
+    /// destination that exists or is shared.
+    fn renames(&self, targets: &[FileResult]) -> Result<Vec<(PathBuf, PathBuf)>> {
+        let Some(expr) = &self.name else {
+            return Ok(Vec::new());
+        };
+        let mut destinations = std::collections::HashSet::new();
+        let mut renames = Vec::new();
+        for file in targets {
+            let Some(name) = file.path.file_name().and_then(|n| n.to_str()) else {
+                return Err(invalid_name(
+                    &file.path,
+                    &file.name,
+                    "it is not valid UTF-8",
+                ));
+            };
+            let new_name = eval_name(expr, name, file.extension.as_deref());
+            if new_name == name {
+                continue;
+            }
+            if new_name.is_empty() || new_name == "." || new_name == ".." {
+                return Err(invalid_name(&file.path, &new_name, "it is not a file name"));
+            }
+            if new_name.contains(['/', '\0']) {
+                return Err(invalid_name(
+                    &file.path,
+                    &new_name,
+                    "it contains '/' or NUL",
+                ));
+            }
+            let to = file.path.with_file_name(&new_name);
+            if !destinations.insert(to.clone()) || occupied(&file.path, &to) {
+                return Err(ExecutorError::RenameConflict {
+                    path: file.path.clone(),
+                    target: to,
+                });
+            }
+            renames.push((file.path.clone(), to));
+        }
+        renames.sort_by_key(|(from, _)| std::cmp::Reverse(from.components().count()));
+        Ok(renames)
+    }
 }
 
-/// A file's owner and permission bits before an update touched it.
-struct Saved<'a> {
-    path: &'a Path,
-    uid: u32,
-    mode: u32,
+/// Whether `to` names an existing entry other than `from` itself. A rename
+/// that only changes case on a case-insensitive filesystem finds `from`.
+fn occupied(from: &Path, to: &Path) -> bool {
+    match (fs::symlink_metadata(from), fs::symlink_metadata(to)) {
+        (_, Err(_)) => false,
+        (Ok(a), Ok(b)) => (a.dev(), a.ino()) != (b.dev(), b.ino()),
+        (Err(_), Ok(_)) => true,
+    }
 }
 
-/// Applies `changes` to every path, or to none of them: if a change fails,
-/// every file touched so far, including the one that failed, gets its previous
-/// owner and permission bits back, newest first.
+fn invalid_name(path: &Path, name: &str, reason: &str) -> ExecutorError {
+    ExecutorError::InvalidName {
+        path: path.to_path_buf(),
+        name: name.to_owned(),
+        reason: reason.to_owned(),
+    }
+}
+
+/// Rejects name expressions the parser would not produce: attributes other
+/// than `name` and `extension`, and empty `REPLACE` patterns.
+fn check_name_expr(expr: &NameExpr) -> Result<()> {
+    match expr {
+        NameExpr::Literal(_)
+        | NameExpr::Attribute(FileAttribute::Name | FileAttribute::Extension) => Ok(()),
+        NameExpr::Attribute(attribute) => Err(ExecutorError::UnsupportedAttribute(format!(
+            "Attribute not supported in a new name: {attribute:?}"
+        ))),
+        NameExpr::Concat(parts) => parts.iter().try_for_each(check_name_expr),
+        NameExpr::Replace { from, .. } if from.is_empty() => Err(ExecutorError::TypeError(
+            "REPLACE needs a non-empty string to find".to_string(),
+        )),
+        NameExpr::Replace { expr, .. } | NameExpr::Lower(expr) | NameExpr::Upper(expr) => {
+            check_name_expr(expr)
+        }
+    }
+}
+
+/// Computes a new name for a file called `name`.
+fn eval_name(expr: &NameExpr, name: &str, extension: Option<&str>) -> String {
+    match expr {
+        NameExpr::Literal(text) => text.clone(),
+        NameExpr::Attribute(FileAttribute::Extension) => extension.unwrap_or_default().to_owned(),
+        NameExpr::Attribute(_) => name.to_owned(),
+        NameExpr::Concat(parts) => parts
+            .iter()
+            .map(|part| eval_name(part, name, extension))
+            .collect(),
+        NameExpr::Replace { expr, from, to } => eval_name(expr, name, extension).replace(from, to),
+        NameExpr::Lower(expr) => eval_name(expr, name, extension).to_lowercase(),
+        NameExpr::Upper(expr) => eval_name(expr, name, extension).to_uppercase(),
+    }
+}
+
+/// A change an update made, recorded so it can be undone.
+enum Undo<'a> {
+    /// A file's owner and permission bits before its attributes changed.
+    Attributes { path: &'a Path, uid: u32, mode: u32 },
+    /// A completed rename.
+    Renamed { from: &'a Path, to: &'a Path },
+}
+
+/// Applies `changes` to every path, then the renames, or applies none of
+/// them: if a change fails, everything done so far, including a partly
+/// changed file, is undone newest first.
 fn apply_changes(
     paths: &[PathBuf],
     changes: &Changes,
-    mut apply: impl FnMut(&Path, Op) -> std::io::Result<()>,
+    renames: &[(PathBuf, PathBuf)],
+    mut apply: impl FnMut(&Path, &Op) -> std::io::Result<()>,
 ) -> Result<()> {
-    let mut saved: Vec<Saved<'_>> = Vec::new();
-    for path in paths {
-        let outcome = fs::metadata(path).and_then(|metadata| {
-            saved.push(Saved {
-                path,
-                uid: metadata.uid(),
-                mode: metadata.permissions().mode() & 0o7777,
-            });
-            changes.ops().try_for_each(|op| apply(path, op))
-        });
-        if let Err(source) = outcome {
-            let unrestored: Vec<PathBuf> = saved
-                .iter()
-                .rev()
-                .filter(|before| restore(before, changes, &mut apply).is_err())
-                .map(|before| before.path.to_path_buf())
-                .collect();
-            let path = path.clone();
-            return Err(if unrestored.is_empty() {
-                ExecutorError::UpdateFailed { path, source }
-            } else {
-                ExecutorError::RollbackFailed {
-                    path,
-                    source,
-                    unrestored,
-                }
-            });
+    let mut log: Vec<Undo<'_>> = Vec::new();
+    let attribute_ops: Vec<Op> = changes.ops().collect();
+    let mut outcome = Ok(());
+    if !attribute_ops.is_empty() {
+        for path in paths {
+            outcome = fs::metadata(path)
+                .and_then(|metadata| {
+                    log.push(Undo::Attributes {
+                        path,
+                        uid: metadata.uid(),
+                        mode: metadata.permissions().mode() & 0o7777,
+                    });
+                    attribute_ops.iter().try_for_each(|op| apply(path, op))
+                })
+                .map_err(|source| (path, source));
+            if outcome.is_err() {
+                break;
+            }
         }
     }
-    Ok(())
+    if outcome.is_ok() {
+        for (from, to) in renames {
+            outcome = apply(from, &Op::Rename(to.clone())).map_err(|source| (from, source));
+            if outcome.is_err() {
+                break;
+            }
+            log.push(Undo::Renamed { from, to });
+        }
+    }
+    let Err((path, source)) = outcome else {
+        return Ok(());
+    };
+    let unrestored: Vec<PathBuf> = log
+        .iter()
+        .rev()
+        .filter_map(|undo| undo_one(undo, changes, &mut apply).err())
+        .collect();
+    let path = path.clone();
+    Err(if unrestored.is_empty() {
+        ExecutorError::UpdateFailed { path, source }
+    } else {
+        ExecutorError::RollbackFailed {
+            path,
+            source,
+            unrestored,
+        }
+    })
 }
 
-/// Puts back a file's owner, then its permission bits, which restoring the
-/// owner may have cleared.
-fn restore(
-    before: &Saved<'_>,
+/// Undoes one change, returning where the file now is if that fails. An
+/// owner is restored before the mode, which restoring the owner may clear.
+fn undo_one(
+    undo: &Undo<'_>,
     changes: &Changes,
-    apply: &mut impl FnMut(&Path, Op) -> std::io::Result<()>,
-) -> std::io::Result<()> {
-    if changes.owner.is_some() {
-        apply(before.path, Op::SetOwner(before.uid))?;
-    }
-    apply(before.path, Op::SetMode(before.mode))
+    apply: &mut impl FnMut(&Path, &Op) -> std::io::Result<()>,
+) -> std::result::Result<(), PathBuf> {
+    let result = match undo {
+        Undo::Attributes { path, uid, mode } => {
+            let owner = if changes.owner.is_some() {
+                apply(path, &Op::SetOwner(*uid))
+            } else {
+                Ok(())
+            };
+            owner.and_then(|()| apply(path, &Op::SetMode(*mode)))
+        }
+        Undo::Renamed { from, to } => apply(to, &Op::Rename(from.to_path_buf())),
+    };
+    result.map_err(|_| match undo {
+        Undo::Attributes { path, .. } => path.to_path_buf(),
+        Undo::Renamed { to, .. } => to.to_path_buf(),
+    })
 }
 
 /// Reads an octal mode from `0` to `7777`.

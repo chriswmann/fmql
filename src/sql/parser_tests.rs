@@ -1,5 +1,7 @@
 #[cfg(test)]
-use crate::sql::ast::{ComparisonOperator, FileAttribute, FileCondition, FileQuery, FileValue};
+use crate::sql::ast::{
+    ComparisonOperator, FileAttribute, FileCondition, FileQuery, FileValue, NameExpr, UpdateValue,
+};
 use crate::sql::parser::{ParserError, parse_sql};
 
 #[test]
@@ -299,7 +301,7 @@ fn test_parse_update() {
 
             let update = &updates[0];
             assert!(matches!(update.attribute, FileAttribute::Permissions));
-            assert_eq!(update.value, "755");
+            assert_eq!(update.value, UpdateValue::Literal("755".to_string()));
 
             match condition {
                 Some(FileCondition::Compare {
@@ -327,13 +329,16 @@ fn test_parse_update_multiple_attributes() {
     };
     let assigned: Vec<_> = updates
         .iter()
-        .map(|u| (u.attribute.clone(), u.value.as_str()))
+        .map(|u| (u.attribute.clone(), u.value.clone()))
         .collect();
     assert_eq!(
         assigned,
         [
-            (FileAttribute::Owner, "admin"),
-            (FileAttribute::Permissions, "755")
+            (FileAttribute::Owner, UpdateValue::Literal("admin".into())),
+            (
+                FileAttribute::Permissions,
+                UpdateValue::Literal("755".into())
+            )
         ]
     );
     for sql in [
@@ -524,4 +529,62 @@ fn projections_keep_their_order() {
         parse_sql("SELECT name, name FROM ."),
         Err(crate::sql::parser::ParserError::DuplicateColumn(column)) if column == "name"
     ));
+}
+
+#[test]
+fn name_assignments_parse_to_expressions() {
+    let name = || Box::new(NameExpr::Attribute(FileAttribute::Name));
+    let parse = |expr: &str| {
+        let FileQuery::Update { updates, .. } =
+            parse_sql(&format!("UPDATE . SET name = {expr}")).unwrap()
+        else {
+            panic!("Expected UPDATE query");
+        };
+        assert_eq!(updates[0].attribute, FileAttribute::Name);
+        updates[0].value.clone()
+    };
+
+    assert_eq!(
+        parse("REPLACE(name, '.jpeg', '.jpg')"),
+        UpdateValue::Name(NameExpr::Replace {
+            expr: name(),
+            from: ".jpeg".into(),
+            to: ".jpg".into(),
+        })
+    );
+    // Nested concatenations flatten, whichever syntax builds them.
+    assert_eq!(
+        parse("'old_' || (name || '.' || EXTENSION)"),
+        parse("concat('old_', name, CONCAT('.', extension))")
+    );
+    assert_eq!(
+        parse("'old_' || name || '.bak'"),
+        UpdateValue::Name(NameExpr::Concat(vec![
+            NameExpr::Literal("old_".into()),
+            NameExpr::Attribute(FileAttribute::Name),
+            NameExpr::Literal(".bak".into()),
+        ]))
+    );
+    assert_eq!(
+        parse("LOWER(UPPER(name))"),
+        UpdateValue::Name(NameExpr::Lower(Box::new(NameExpr::Upper(name()))))
+    );
+    for expr in [
+        "size",
+        "path",
+        "1",
+        "REPLACE(name, '', 'x')",
+        "REPLACE(name, extension, 'x')",
+        "REPLACE(name, 'a')",
+        "CONCAT()",
+        "TRIM(name)",
+        "LOWER(name, name)",
+        "name + 'x'",
+        "CONCAT(DISTINCT name)",
+    ] {
+        assert!(
+            parse_sql(&format!("UPDATE . SET name = {expr}")).is_err(),
+            "accepted {expr}"
+        );
+    }
 }

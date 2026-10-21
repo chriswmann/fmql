@@ -52,7 +52,7 @@ temporary directories, including rejected updates that must not change files.
 
 - `parse_sql` uses sqlparser tokens and expression parsing with `FileDialect`.
   Its restricted statement grammar accepts `SELECT` (`*` or named columns) and
-  `UPDATE` assignments to `permissions` and `owner`,
+  `UPDATE` assignments to `permissions`, `owner` and `name` (a `NameExpr`),
   and requires complete input consumption. Unsupported syntax must return an
   error, never an absent or weakened condition.
 - Both statements default to non-recursive traversal. `WITH RECURSIVE` enables
@@ -64,7 +64,7 @@ temporary directories, including rejected updates that must not change files.
   traversal visits entries by file name, so unordered output is deterministic.
   `SELECT a, b` projects columns; the executor still returns whole `FileResult`s
   and `output.rs` (`render_columns`, `columns_json`) applies the projection.
-  `GROUP BY`, `OFFSET`, select-list expressions and rename updates are rejected.
+  `GROUP BY`, `OFFSET` and select-list expressions are rejected.
   The README documents the supported subset.
 - The executor compiles a condition into a private `Predicate` before listing
   files, checking attributes, operand types and patterns in every branch, so a
@@ -74,7 +74,11 @@ temporary directories, including rejected updates that must not change files.
   file's `Op`s (owner, then mode) and, when one fails, restores every touched
   file's owner then mode (`UpdateFailed`), naming any it cannot restore
   (`RollbackFailed`). It takes the operation as a closure so tests can inject
-  failures; `apply_op` is the real one.
+  failures; `apply_op` is the real one. `SET name = <NameExpr>` renames run
+  after attribute changes, deepest first; `Changes::renames` validates names
+  and rejects existing or shared destinations before anything changes; at apply
+  time `rename_no_replace` (`renameat2(RENAME_NOREPLACE)` on Linux glibc, a
+  check-then-rename elsewhere) refuses to replace anything that appeared since.
 - Updates skip symbolic links so they cannot change files outside the queried
   directory. Listing reads metadata through links, falling back to the link itself.
 - `OVERHAUL_PLAN.md` retains the original review as history.

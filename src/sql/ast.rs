@@ -202,21 +202,66 @@ pub struct OrderBy {
 /// # Examples
 ///
 /// ```no_run
-/// use fmql::sql::ast::{FileAttributeUpdate, FileAttribute};
+/// use fmql::sql::ast::{FileAttributeUpdate, FileAttribute, UpdateValue};
 ///
 /// // In an UPDATE query:
 /// // UPDATE ... SET permissions = '755'
 /// let update = FileAttributeUpdate {
 ///     attribute: FileAttribute::Permissions,
-///     value: "755".to_string(),
+///     value: UpdateValue::Literal("755".to_string()),
 /// };
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileAttributeUpdate {
     /// The attribute to update.
     pub attribute: FileAttribute,
-    /// The new value for the attribute (as a string).
-    pub value: String,
+    /// The new value for the attribute.
+    pub value: UpdateValue,
+}
+
+/// The value an update assigns.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum UpdateValue {
+    /// A fixed value: octal digits for `permissions`, a user name for `owner`.
+    Literal(String),
+    /// A new file name computed from each file, for `name`.
+    Name(NameExpr),
+}
+
+/// An expression computing a file's new name in `SET name = ...`.
+///
+/// ```
+/// use fmql::sql::ast::{FileAttribute, NameExpr};
+///
+/// // REPLACE(name, '.jpeg', '.jpg')
+/// let rename = NameExpr::Replace {
+///     expr: Box::new(NameExpr::Attribute(FileAttribute::Name)),
+///     from: ".jpeg".to_string(),
+///     to: ".jpg".to_string(),
+/// };
+/// # let _ = rename;
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum NameExpr {
+    /// A string literal.
+    Literal(String),
+    /// The file's `name` or `extension` (empty when it has none).
+    Attribute(FileAttribute),
+    /// The parts joined in order, from `a || b` or `CONCAT(a, b, ...)`.
+    Concat(Vec<NameExpr>),
+    /// `REPLACE(expr, from, to)`: every occurrence of `from` replaced by `to`.
+    Replace {
+        /// The string to search.
+        expr: Box<NameExpr>,
+        /// The text to find; never empty.
+        from: String,
+        /// Its replacement.
+        to: String,
+    },
+    /// `LOWER(expr)`.
+    Lower(Box<NameExpr>),
+    /// `UPPER(expr)`.
+    Upper(Box<NameExpr>),
 }
 
 /// Represents a condition for filtering files.

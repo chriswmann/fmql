@@ -2,7 +2,7 @@
 //!
 //! Supports `SELECT * | attribute, ... FROM path [WHERE condition] [ORDER BY attribute
 //! [ASC|DESC], ...] [LIMIT n]` and
-//! `UPDATE path SET permissions = '640', owner = 'name' [WHERE condition]`.
+//! `UPDATE path SET permissions = '640', owner = 'user', name = expr [WHERE condition]`.
 //! Prefix either with `WITH RECURSIVE` to include descendants. Double-quote
 //! paths containing spaces or SQL punctuation. Single-quote string literals,
 //! doubling quotes for embedded apostrophes.
@@ -25,7 +25,7 @@ use thiserror::Error;
 
 use crate::sql::ast::{
     ComparisonOperator, FileAttribute, FileAttributeUpdate, FileCondition, FileQuery, FileValue,
-    OrderBy,
+    NameExpr, OrderBy, UpdateValue,
 };
 use crate::sql::dialect::FileDialect;
 
@@ -226,6 +226,7 @@ fn parse_updates(parser: &mut Parser<'_>) -> Result<Vec<FileAttributeUpdate>> {
         let attribute = match name.value.to_ascii_lowercase().as_str() {
             "permissions" => FileAttribute::Permissions,
             "owner" => FileAttribute::Owner,
+            "name" => FileAttribute::Name,
             _ => return Err(ParserError::UnsupportedAttribute(name.value)),
         };
         if updates.iter().any(|update| update.attribute == attribute) {
@@ -236,11 +237,13 @@ fn parse_updates(parser: &mut Parser<'_>) -> Result<Vec<FileAttributeUpdate>> {
         parser.expect_token(&Token::Eq)?;
         let expr = parser.parse_expr()?;
         let value = match attribute {
-            FileAttribute::Permissions => format!("{:o}", octal_mode(&expr)?),
-            // The executor resolves the name, so an unknown user fails before
+            FileAttribute::Permissions => UpdateValue::Literal(format!("{:o}", octal_mode(&expr)?)),
+            // The executor checks each computed name before any file changes.
+            FileAttribute::Name => UpdateValue::Name(name_expr(&expr)?),
+            // The executor resolves the user, so an unknown one fails before
             // any file changes.
             _ => match string_literal(&expr) {
-                Ok(name) if !name.is_empty() => name,
+                Ok(name) if !name.is_empty() => UpdateValue::Literal(name),
                 _ => return Err(invalid_value(&attribute, &expr)),
             },
         };
@@ -399,6 +402,18 @@ fn comparison_operator(operator: &BinaryOperator) -> Result<ComparisonOperator> 
 }
 
 fn convert_function(function: &Function) -> Result<FileCondition> {
+    if let Some((name, args)) = plain_call(function)
+        && let [attribute, pattern] = args.as_slice()
+        && name == "REGEXP"
+    {
+        return regexp(attribute, pattern);
+    }
+    Err(ParserError::UnsupportedExpression(function.to_string()))
+}
+
+/// The upper-case name and positional arguments of a plain call such as
+/// `F(a, b)`, or `None` if it uses any other function syntax.
+fn plain_call(function: &Function) -> Option<(String, Vec<&Expr>)> {
     let Function {
         name,
         uses_odbc_syntax,
@@ -410,7 +425,6 @@ fn convert_function(function: &Function) -> Result<FileCondition> {
         within_group,
     } = function;
     if name.0.len() != 1
-        || !name.to_string().eq_ignore_ascii_case("REGEXP")
         || *uses_odbc_syntax
         || !matches!(parameters, FunctionArguments::None)
         || filter.is_some()
@@ -418,19 +432,80 @@ fn convert_function(function: &Function) -> Result<FileCondition> {
         || over.is_some()
         || !within_group.is_empty()
     {
-        return Err(ParserError::UnsupportedExpression(function.to_string()));
+        return None;
     }
-    if let FunctionArguments::List(list) = args
-        && list.duplicate_treatment.is_none()
-        && list.clauses.is_empty()
-        && let [
-            FunctionArg::Unnamed(FunctionArgExpr::Expr(attribute)),
-            FunctionArg::Unnamed(FunctionArgExpr::Expr(pattern)),
-        ] = list.args.as_slice()
-    {
-        return regexp(attribute, pattern);
+    let FunctionArguments::List(list) = args else {
+        return None;
+    };
+    if list.duplicate_treatment.is_some() || !list.clauses.is_empty() {
+        return None;
     }
-    Err(ParserError::UnsupportedExpression(function.to_string()))
+    let args = list
+        .args
+        .iter()
+        .map(|arg| match arg {
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => Some(expr),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some((name.to_string().to_ascii_uppercase(), args))
+}
+
+/// Converts the right-hand side of `SET name = ...`.
+fn name_expr(expr: &Expr) -> Result<NameExpr> {
+    match expr {
+        Expr::Nested(inner) => name_expr(inner),
+        Expr::Value(_) => Ok(NameExpr::Literal(string_literal(expr)?)),
+        Expr::Identifier(_) => match parse_attribute(expr)? {
+            attribute @ (FileAttribute::Name | FileAttribute::Extension) => {
+                Ok(NameExpr::Attribute(attribute))
+            }
+            _ => Err(unsupported(expr)),
+        },
+        Expr::BinaryOp {
+            left,
+            op: BinaryOperator::StringConcat,
+            right,
+        } => Ok(concat([name_expr(left)?, name_expr(right)?])),
+        Expr::Function(function) => match plain_call(function) {
+            Some((name, args)) if name == "CONCAT" && !args.is_empty() => Ok(concat(
+                args.into_iter()
+                    .map(name_expr)
+                    .collect::<Result<Vec<_>>>()?,
+            )),
+            Some((name, args)) if name == "REPLACE" && args.len() == 3 => {
+                let from = string_literal(args[1])?;
+                if from.is_empty() {
+                    return Err(unsupported(args[1]));
+                }
+                Ok(NameExpr::Replace {
+                    expr: Box::new(name_expr(args[0])?),
+                    from,
+                    to: string_literal(args[2])?,
+                })
+            }
+            Some((name, args)) if name == "LOWER" && args.len() == 1 => {
+                Ok(NameExpr::Lower(Box::new(name_expr(args[0])?)))
+            }
+            Some((name, args)) if name == "UPPER" && args.len() == 1 => {
+                Ok(NameExpr::Upper(Box::new(name_expr(args[0])?)))
+            }
+            _ => Err(unsupported(expr)),
+        },
+        _ => Err(unsupported(expr)),
+    }
+}
+
+/// Joins parts, flattening nested concatenations.
+fn concat(parts: impl IntoIterator<Item = NameExpr>) -> NameExpr {
+    let mut flat = Vec::new();
+    for part in parts {
+        match part {
+            NameExpr::Concat(inner) => flat.extend(inner),
+            part => flat.push(part),
+        }
+    }
+    NameExpr::Concat(flat)
 }
 
 fn regexp(attribute: &Expr, pattern: &Expr) -> Result<FileCondition> {
