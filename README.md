@@ -77,6 +77,19 @@ FMQL understands these SQL-ish commands:
   is a user name, looked up before any file changes; giving a file to another
   user normally needs root. Ownership changes first, because `chown` can clear
   setuid and setgid bits that the new permissions might set.
+- `UPDATE path SET name = expression [WHERE condition]`: Rename each matching
+  entry within its own directory. The expression combines quoted strings,
+  `name`, `extension` (`''` when there is none), `||` or `CONCAT(...)`,
+  `REPLACE(text, 'find', 'replacement')`, `LOWER(...)` and `UPPER(...)`, as in
+  `SET name = REPLACE(name, '.jpeg', '.jpg')` or `SET name = 'old_' || name`.
+  Every new name is checked before anything moves: an empty name, `.`, `..` or
+  one containing `/` is rejected, as is a destination that already exists or
+  that two entries would share. A rename never replaces an entry that appears
+  while the update runs (on Linux the kernel enforces this); the update fails
+  and is rolled back instead. With `WITH RECURSIVE`, entries inside a
+  directory are renamed before the directory itself. Renames run after any
+  permission and ownership changes in the same statement, and are rolled back
+  with them if anything fails.
 - `WHERE`: Comparisons (`=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`), `AND`, `OR`,
   `NOT`, parentheses, `[NOT] BETWEEN`, `[NOT] LIKE`, `ILIKE`, and
   `REGEXP(attribute, 'pattern')` or `attribute [NOT] REGEXP 'pattern'`.
@@ -115,7 +128,7 @@ embedded apostrophe. SQL comments and one optional trailing semicolon are allowe
 The parser uses `sqlparser` for tokens and expressions and requires the whole
 query to be understood before execution. Unsupported queries return an error:
 this includes expressions or aliases in the select list, grouping, `OFFSET`, joins,
-subqueries, multiple statements and rename updates.
+subqueries and multiple statements.
 Malformed predicates, incompatible literal types and invalid regexes are also
 rejected, including on empty directories. If changing one file's owner or
 permissions fails, the files already changed get their previous owner and

@@ -4,6 +4,7 @@
 
 use crate::sql::ast::{
     ComparisonOperator, FileAttribute, FileAttributeUpdate, FileCondition, FileQuery, FileValue,
+    UpdateValue,
 };
 use crate::sql::executor::execute_query;
 use std::fs::{self, File};
@@ -75,7 +76,7 @@ fn test_non_recursive_update_skips_subdirectory_files() {
         recursive: false,
         updates: vec![FileAttributeUpdate {
             attribute: FileAttribute::Permissions,
-            value: "755".to_string(),
+            value: UpdateValue::Literal("755".to_string()),
         }],
         condition: Some(condition),
     };

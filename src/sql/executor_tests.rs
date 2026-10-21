@@ -1,6 +1,7 @@
 #[cfg(test)]
 use crate::sql::ast::{
     ComparisonOperator, FileAttribute, FileAttributeUpdate, FileCondition, FileQuery, FileValue,
+    UpdateValue,
 };
 use crate::sql::executor::{ExecutorError, Op, execute_query};
 use std::fs::{self, File};
@@ -270,7 +271,7 @@ fn test_execute_update_permissions() {
 
     let updates = vec![FileAttributeUpdate {
         attribute: FileAttribute::Permissions,
-        value: "644".to_string(),
+        value: UpdateValue::Literal("644".to_string()),
     }];
 
     let query = FileQuery::Update {
@@ -417,7 +418,7 @@ fn test_update_with_failing_condition_changes_nothing() {
         recursive: false,
         updates: vec![FileAttributeUpdate {
             attribute: FileAttribute::Permissions,
-            value: "777".to_string(),
+            value: UpdateValue::Literal("777".to_string()),
         }],
         condition: Some(condition),
     };
@@ -578,11 +579,11 @@ fn test_invalid_update_value_changes_nothing() {
         updates: vec![
             FileAttributeUpdate {
                 attribute: FileAttribute::Permissions,
-                value: "644".to_string(),
+                value: UpdateValue::Literal("644".to_string()),
             },
             FileAttributeUpdate {
                 attribute: FileAttribute::Permissions,
-                value: "17777".to_string(),
+                value: UpdateValue::Literal("17777".to_string()),
             },
         ],
         condition: None,
@@ -660,6 +661,7 @@ fn mode_change(mode: u32) -> super::Changes {
     super::Changes {
         mode: Some(mode),
         owner: None,
+        name: None,
     }
 }
 
@@ -683,8 +685,8 @@ fn test_failed_update_rolls_back_earlier_changes() {
     let paths = three_files(dir.path());
     let failing = paths[2].clone();
 
-    let err = super::apply_changes(&paths, &mode_change(0o755), |path, op| {
-        if path == failing && op == Op::SetMode(0o755) {
+    let err = super::apply_changes(&paths, &mode_change(0o755), &[], |path, op| {
+        if path == failing && *op == Op::SetMode(0o755) {
             return Err(std::io::Error::other("injected"));
         }
         super::apply_op(path, op)
@@ -708,9 +710,9 @@ fn test_failed_rollback_names_the_files_left_changed() {
     let paths = three_files(dir.path());
     let (stuck, failing) = (paths[0].clone(), paths[2].clone());
 
-    let err = super::apply_changes(&paths, &mode_change(0o755), |path, op| {
-        if (path == failing && op == Op::SetMode(0o755))
-            || (path == stuck && op == Op::SetMode(0o600))
+    let err = super::apply_changes(&paths, &mode_change(0o755), &[], |path, op| {
+        if (path == failing && *op == Op::SetMode(0o755))
+            || (path == stuck && *op == Op::SetMode(0o600))
         {
             return Err(std::io::Error::other("injected"));
         }
@@ -741,7 +743,7 @@ fn test_successful_update_reports_every_changed_file() {
         recursive: false,
         updates: vec![FileAttributeUpdate {
             attribute: FileAttribute::Permissions,
-            value: "640".to_string(),
+            value: UpdateValue::Literal("640".to_string()),
         }],
         condition: None,
     };
@@ -769,11 +771,11 @@ fn test_update_query_surfaces_a_rolled_back_failure() {
     let failing = paths[1].clone();
     let updates = [FileAttributeUpdate {
         attribute: FileAttribute::Permissions,
-        value: "755".to_string(),
+        value: UpdateValue::Literal("755".to_string()),
     }];
 
     let err = super::update_with(dir.path(), false, &updates, None, |path, op| {
-        if path == failing && op == Op::SetMode(0o755) {
+        if path == failing && *op == Op::SetMode(0o755) {
             return Err(std::io::Error::other("injected"));
         }
         super::apply_op(path, op)
@@ -803,15 +805,16 @@ fn test_failed_owner_change_restores_owner_then_mode() {
     let changes = super::Changes {
         mode: Some(0o644),
         owner: Some((uid, "me".to_string())),
+        name: None,
     };
     let mut log = Vec::new();
     let mut failed = false;
 
-    let err = super::apply_changes(&paths, &changes, |path, op| {
+    let err = super::apply_changes(&paths, &changes, &[], |path, op| {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        log.push((name.clone(), op));
+        log.push((name.clone(), op.clone()));
         // The second file's first owner change fails before its mode is touched.
-        if name == "b" && op == Op::SetOwner(uid) && !failed {
+        if name == "b" && *op == Op::SetOwner(uid) && !failed {
             failed = true;
             return Err(std::io::Error::other("injected"));
         }
@@ -820,7 +823,7 @@ fn test_failed_owner_change_restores_owner_then_mode() {
     .unwrap_err();
 
     assert!(matches!(err, ExecutorError::UpdateFailed { .. }), "{err:?}");
-    let ops: Vec<_> = log.iter().map(|(n, op)| (n.as_str(), *op)).collect();
+    let ops: Vec<_> = log.iter().map(|(n, op)| (n.as_str(), op.clone())).collect();
     assert_eq!(
         ops,
         [
@@ -846,7 +849,7 @@ fn test_unknown_owner_fails_before_listing() {
         recursive: false,
         updates: vec![FileAttributeUpdate {
             attribute: FileAttribute::Owner,
-            value: "no-such-user-fmql".to_string(),
+            value: UpdateValue::Literal("no-such-user-fmql".to_string()),
         }],
         condition: None,
     };
@@ -870,5 +873,283 @@ fn test_rollback_failure_message_covers_any_attribute() {
     assert_eq!(
         err.to_string(),
         "Failed to update b: injected; could not undo the changes to a"
+    );
+}
+
+fn rename_query(dir: &Path, recursive: bool, expr: crate::sql::ast::NameExpr) -> FileQuery {
+    FileQuery::Update {
+        path: dir.to_path_buf(),
+        recursive,
+        updates: vec![FileAttributeUpdate {
+            attribute: FileAttribute::Name,
+            value: UpdateValue::Name(expr),
+        }],
+        condition: None,
+    }
+}
+
+fn listing(dir: &Path) -> Vec<String> {
+    let mut names: Vec<_> = walkdir::WalkDir::new(dir)
+        .min_depth(1)
+        .into_iter()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            entry
+                .path()
+                .strip_prefix(dir)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+fn prefixed(prefix: &str) -> crate::sql::ast::NameExpr {
+    use crate::sql::ast::NameExpr;
+    NameExpr::Concat(vec![
+        NameExpr::Literal(prefix.to_string()),
+        NameExpr::Attribute(FileAttribute::Name),
+    ])
+}
+
+#[test]
+fn test_rename_reports_new_paths_inside_renamed_directories() {
+    let dir = tempdir().unwrap();
+    fs::create_dir(dir.path().join("d")).unwrap();
+    create_test_file(dir.path(), "d/x.txt", "x").unwrap();
+    create_test_file(dir.path(), "top.txt", "t").unwrap();
+
+    let mut updated = execute_query(&rename_query(dir.path(), true, prefixed("n_"))).unwrap();
+    updated.sort_by(|a, b| a.path.cmp(&b.path));
+
+    assert_eq!(listing(dir.path()), ["n_d", "n_d/n_x.txt", "n_top.txt"]);
+    let reported: Vec<_> = updated
+        .iter()
+        .map(|f| {
+            (
+                f.path
+                    .strip_prefix(dir.path())
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                f.name.clone(),
+                f.extension.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        reported,
+        [
+            ("n_d".to_string(), "n_d".to_string(), None),
+            (
+                "n_d/n_x.txt".to_string(),
+                "n_x.txt".to_string(),
+                Some("txt".to_string())
+            ),
+            (
+                "n_top.txt".to_string(),
+                "n_top.txt".to_string(),
+                Some("txt".to_string())
+            ),
+        ]
+    );
+}
+
+#[test]
+fn test_rename_refuses_to_overwrite_or_merge() {
+    use crate::sql::ast::NameExpr;
+
+    let dir = tempdir().unwrap();
+    for name in ["a.txt", "b.txt", "n_a.txt"] {
+        create_test_file(dir.path(), name, name).unwrap();
+    }
+
+    // n_a.txt exists, so renaming a.txt onto it must fail before b.txt moves.
+    let err = execute_query(&rename_query(dir.path(), false, prefixed("n_"))).unwrap_err();
+    assert!(
+        matches!(err, ExecutorError::RenameConflict { .. }),
+        "{err:?}"
+    );
+    // Two files cannot share one destination.
+    let same = NameExpr::Literal("same.txt".to_string());
+    let err = execute_query(&rename_query(dir.path(), false, same)).unwrap_err();
+    assert!(
+        matches!(err, ExecutorError::RenameConflict { .. }),
+        "{err:?}"
+    );
+
+    assert_eq!(listing(dir.path()), ["a.txt", "b.txt", "n_a.txt"]);
+}
+
+#[test]
+fn test_rename_rejects_unusable_names_and_skips_unchanged_ones() {
+    use crate::sql::ast::NameExpr;
+
+    let dir = tempdir().unwrap();
+    create_test_file(dir.path(), "a.txt", "a").unwrap();
+    for bad in ["", ".", "..", "x/y"] {
+        let err = execute_query(&rename_query(
+            dir.path(),
+            false,
+            NameExpr::Literal(bad.to_string()),
+        ))
+        .unwrap_err();
+        assert!(
+            matches!(err, ExecutorError::InvalidName { .. }),
+            "{bad}: {err:?}"
+        );
+    }
+
+    let unchanged = NameExpr::Replace {
+        expr: Box::new(NameExpr::Attribute(FileAttribute::Name)),
+        from: "zzz".to_string(),
+        to: "q".to_string(),
+    };
+    let updated = execute_query(&rename_query(dir.path(), false, unchanged)).unwrap();
+
+    assert_eq!(updated.len(), 1);
+    assert_eq!(listing(dir.path()), ["a.txt"]);
+}
+
+#[test]
+fn test_unsupported_attribute_in_new_name_is_rejected() {
+    let dir = tempdir().unwrap();
+    let expr = crate::sql::ast::NameExpr::Attribute(FileAttribute::Size);
+
+    let err = execute_query(&rename_query(dir.path(), false, expr)).unwrap_err();
+
+    assert!(
+        matches!(err, ExecutorError::UnsupportedAttribute(_)),
+        "{err:?}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn test_failed_rename_undoes_renames_and_attribute_changes() {
+    let dir = tempdir().unwrap();
+    let paths = three_files(dir.path());
+    let changes = super::Changes {
+        mode: Some(0o644),
+        owner: None,
+        name: Some(prefixed("n_")),
+    };
+    let renames: Vec<_> = paths
+        .iter()
+        .map(|p| {
+            let name = p.file_name().unwrap().to_string_lossy();
+            (p.clone(), p.with_file_name(format!("n_{name}")))
+        })
+        .collect();
+    let failing = paths[1].clone();
+
+    let err = super::apply_changes(&paths, &changes, &renames, |path, op| {
+        if path == failing && matches!(op, Op::Rename(_)) {
+            return Err(std::io::Error::other("injected"));
+        }
+        super::apply_op(path, op)
+    })
+    .unwrap_err();
+
+    assert!(
+        matches!(&err, ExecutorError::UpdateFailed { path, .. } if *path == failing),
+        "{err:?}"
+    );
+    assert_eq!(listing(dir.path()), ["a", "b", "c"]);
+    for path in &paths {
+        assert_eq!(mode_of(path), 0o600, "{}", path.display());
+    }
+}
+
+#[test]
+fn test_rename_never_replaces_an_existing_entry() {
+    let dir = tempdir().unwrap();
+    let from = create_test_file(dir.path(), "a", "from").unwrap();
+    let to = create_test_file(dir.path(), "b", "keep").unwrap();
+
+    let err = super::apply_op(&from, &Op::Rename(to.clone())).unwrap_err();
+
+    assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists, "{err}");
+    assert_eq!(fs::read_to_string(&from).unwrap(), "from");
+    assert_eq!(fs::read_to_string(&to).unwrap(), "keep");
+}
+
+#[test]
+fn test_destination_created_during_an_update_is_kept_and_the_update_undone() {
+    let dir = tempdir().unwrap();
+    let a = create_test_file(dir.path(), "a", "a").unwrap();
+    let b = create_test_file(dir.path(), "b", "b").unwrap();
+    let paths = vec![a.clone(), b.clone()];
+    let changes = super::Changes {
+        mode: None,
+        owner: None,
+        name: Some(prefixed("n_")),
+    };
+    let renames = vec![
+        (a.clone(), dir.path().join("n_a")),
+        (b.clone(), dir.path().join("n_b")),
+    ];
+
+    let err = super::apply_changes(&paths, &changes, &renames, |path, op| {
+        // Another process creates the second destination after planning.
+        if let Op::Rename(to) = op
+            && path == b
+        {
+            fs::write(to, "theirs").unwrap();
+        }
+        super::apply_op(path, op)
+    })
+    .unwrap_err();
+
+    assert!(
+        matches!(&err, ExecutorError::UpdateFailed { path, .. } if *path == b),
+        "{err:?}"
+    );
+    assert_eq!(listing(dir.path()), ["a", "b", "n_b"]);
+    assert_eq!(
+        fs::read_to_string(dir.path().join("n_b")).unwrap(),
+        "theirs"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn test_owner_and_rename_report_permissions_read_at_the_new_path() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Some(me) = current_user() else {
+        eprintln!("skipping: the current uid has no user database entry");
+        return;
+    };
+    let dir = tempdir().unwrap();
+    let file = create_test_file(dir.path(), "tool", "#!/bin/sh").unwrap();
+    // chown may clear setuid, so the report must come from the renamed file.
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o4755)).unwrap();
+    let query = FileQuery::Update {
+        path: dir.path().to_path_buf(),
+        recursive: false,
+        updates: vec![
+            FileAttributeUpdate {
+                attribute: FileAttribute::Owner,
+                value: UpdateValue::Literal(me),
+            },
+            FileAttributeUpdate {
+                attribute: FileAttribute::Name,
+                value: UpdateValue::Name(prefixed("n_")),
+            },
+        ],
+        condition: None,
+    };
+
+    let updated = execute_query(&query).unwrap();
+
+    let renamed = dir.path().join("n_tool");
+    assert_eq!(updated.len(), 1);
+    assert_eq!(updated[0].path, renamed);
+    assert_eq!(
+        updated[0].permissions,
+        fs::metadata(&renamed).unwrap().permissions().mode()
     );
 }

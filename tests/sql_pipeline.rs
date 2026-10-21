@@ -705,3 +705,39 @@ fn owner_and_permissions_update_together() {
     assert_eq!(mode(&dir.path().join("beta.txt")), 0o604);
     assert_eq!(mode(&dir.path().join("alpha.rs")), 0o640);
 }
+
+#[test]
+fn cli_renames_matching_files() {
+    let dir = fixture();
+    let sql = format!(
+        "WITH RECURSIVE UPDATE {} SET name = LOWER(REPLACE(name, '.rs', '.RS.bak')) \
+         WHERE extension = 'rs'",
+        dir.path().display()
+    );
+    let output = fmql(&["sql", &sql, "--format", "json"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let updated: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let mut names: Vec<_> = updated
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["name"].as_str().unwrap().to_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["alpha.rs.bak", "child.rs.bak"]);
+    assert!(dir.path().join("alpha.rs.bak").exists());
+    assert!(dir.path().join("nested/child.rs.bak").exists());
+    assert!(!dir.path().join("alpha.rs").exists());
+    // Renaming onto an existing file fails without moving anything.
+    let sql = format!(
+        "UPDATE {} SET name = 'beta.txt' WHERE name = 'it''s.txt'",
+        dir.path().display()
+    );
+    let output = fmql(&["sql", &sql]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(dir.path().join("it's.txt").exists());
+}
