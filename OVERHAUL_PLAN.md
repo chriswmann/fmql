@@ -3,18 +3,26 @@
 A code review and staged plan to turn FMQL from a test-passing mock into a
 working tool. Written 2026-05-22 against commit `f5037c3` (v0.3.0).
 
-## Progress as of 2026-10-12
+## Progress as of 2026-10-21
 
-The review below is historical. Root-directory exclusion, explicit executor
-recursion, date comparisons and literal LIKE matching now have regression tests.
-The parser stub has been replaced with sqlparser tokenisation and expression
-parsing behind a restricted statement grammar. It validates the entire query,
-rejects unsupported constructs, and supports quoted paths and explicit recursion
-for both SELECT and UPDATE. This avoids accepting full SQL clauses that the
-executor cannot honour. Parser/executor/CLI integration tests cover exact matches
-and rejected updates leaving files unchanged. The README documents the supported
-subset. Executor errors for hand-built ASTs, transactional updates, broader
-features and repository-wide lint/formatting cleanup remain separate work.
+The review below is historical. Every numbered item is resolved except M2,
+which is deferred (see the end of this section).
+
+- 2026-10-12 (#1): the stub parser was replaced with sqlparser tokenisation and
+  expression parsing behind a restricted grammar (C1-C3, H1-H3, H5, M5, M6).
+- #2, #3: rustfmt, `clippy::pedantic` and examples are enforced in CI, unused
+  dependencies are gone, and `examples/group_by_updates.rs` is deleted (M8, L2).
+- #4: conditions compile to a checked predicate before traversal, so evaluation
+  errors surface instead of being swallowed (H4).
+- #5: `FMQLError` wraps the parser and executor errors, `fmql::query` runs a
+  query end to end, and `--format` is a `ValueEnum` with `ls -l` style text (M4, M7).
+- #6: `owner`, `created`, `accessed` and `is_symlink` are populated and queryable (M3).
+- #7, #8: `ORDER BY`, `LIMIT` and projected columns are implemented (M1).
+- #9: a permission update that fails part way rolls back earlier changes.
+- #10: `Cargo.lock` is committed and CI builds with `--locked`.
+
+Still out of scope: `GROUP BY`, ownership and rename updates, and an rwx-string
+form of `permissions` for `LIKE` (M2; numeric octal comparison is documented instead).
 
 ## 1. Review summary
 
