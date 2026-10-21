@@ -72,6 +72,17 @@ FMQL understands these SQL-ish commands:
   entries are listed by name. `ORDER BY` accepts any filter attribute; nulls sort
   last in ascending order and first in descending order. `LIMIT` applies after
   sorting.
+- `SELECT columns FROM path [WHERE condition] [GROUP BY attribute, ...] [ORDER BY ...] [LIMIT n]`:
+  Summarise files. A column is a grouped attribute or an aggregate:
+  `COUNT(*)`, `COUNT(attribute)`, `SUM(size)`, `AVG(size)`, `MIN(attribute)` or
+  `MAX(attribute)`. Each row is one group, as in
+  `SELECT extension, COUNT(*), SUM(size) FROM . GROUP BY extension ORDER BY SUM(size) DESC`.
+  Without `GROUP BY`, all matching files form one row, so `SELECT COUNT(*) FROM .`
+  works even on an empty directory. Aggregates skip null values; `SUM`, `AVG`,
+  `MIN` and `MAX` of nothing are null. `ORDER BY` may use any grouped attribute or
+  aggregate, selected or not; without it, rows are in ascending order of their
+  group values. Text output has no heading; JSON keys are the column labels such
+  as `count(*)`. `HAVING` is not supported.
 - `UPDATE path SET permissions = '755', owner = 'alice' [WHERE condition]`: Change
   permissions, ownership or both. Each attribute may be assigned once. The owner
   is a user name, looked up before any file changes; giving a file to another
@@ -127,7 +138,7 @@ embedded apostrophe. SQL comments and one optional trailing semicolon are allowe
 
 The parser uses `sqlparser` for tokens and expressions and requires the whole
 query to be understood before execution. Unsupported queries return an error:
-this includes expressions or aliases in the select list, grouping, `OFFSET`, joins,
+this includes expressions or aliases in the select list, `HAVING`, `OFFSET`, joins,
 subqueries and multiple statements.
 Malformed predicates, incompatible literal types and invalid regexes are also
 rejected, including on empty directories. If changing one file's owner or

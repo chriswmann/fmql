@@ -4,8 +4,8 @@ use std::fmt::Write;
 
 use serde_json::{Map, Value};
 
-use crate::sql::ast::FileAttribute;
-use crate::sql::executor::FileResult;
+use crate::sql::ast::{AggregateFunction, Column, FileAttribute, FileValue};
+use crate::sql::executor::{FileResult, Table};
 
 /// Renders results as one `ls -l` style line per entry: type and permission
 /// bits, size in bytes, modification time in UTC, and path. A symbolic link
@@ -187,6 +187,107 @@ fn json_value(file: &FileResult, attribute: &FileAttribute) -> Value {
         FileAttribute::IsExecutable => (file.permissions & 0o100 != 0).into(),
         FileAttribute::All => serde_json::to_value(file).unwrap_or(Value::Null),
     }
+}
+
+/// Renders a grouped query's rows as aligned columns separated by two spaces,
+/// without a heading. Numbers are right-aligned, permission bits are octal,
+/// times are UTC and nulls are `-`.
+#[must_use]
+pub fn render_table(table: &Table) -> String {
+    let rows: Vec<Vec<String>> = table
+        .rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .zip(&table.columns)
+                .map(|(value, column)| table_cell(value, column))
+                .collect()
+        })
+        .collect();
+    let widths: Vec<usize> = (0..table.columns.len())
+        .map(|i| {
+            rows.iter()
+                .map(|row| row[i].chars().count())
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    let mut out = String::new();
+    for (row, values) in rows.iter().zip(&table.rows) {
+        let last = row.len().saturating_sub(1);
+        for (i, (text, value)) in row.iter().zip(values).enumerate() {
+            if i > 0 {
+                out.push_str("  ");
+            }
+            let width = widths[i];
+            if matches!(value, FileValue::Number(_)) {
+                let _ = write!(out, "{text:>width$}");
+            } else if i == last {
+                out.push_str(text);
+            } else {
+                let _ = write!(out, "{text:<width$}");
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// Converts a grouped query's rows to JSON objects keyed by column label, in
+/// column order. Whole numbers are integers, times are Unix seconds and
+/// permissions are the permission bits.
+#[must_use]
+pub fn table_json(table: &Table) -> Value {
+    table
+        .rows
+        .iter()
+        .map(|row| {
+            table
+                .columns
+                .iter()
+                .zip(row)
+                .map(|(column, value)| (column.label(), value_json(value)))
+                .collect::<Map<_, _>>()
+        })
+        .collect()
+}
+
+fn table_cell(value: &FileValue, column: &Column) -> String {
+    let permissions = matches!(
+        column,
+        Column::Attribute(FileAttribute::Permissions)
+            | Column::Aggregate {
+                function: AggregateFunction::Min | AggregateFunction::Max,
+                attribute: Some(FileAttribute::Permissions),
+            }
+    );
+    match value {
+        FileValue::Number(n) if permissions => format!("{:o}", whole(*n).unwrap_or_default()),
+        FileValue::Number(n) => whole(*n).map_or_else(|| n.to_string(), |n| n.to_string()),
+        FileValue::String(s) => s.clone(),
+        FileValue::DateTime(t) => t.format("%Y-%m-%d %H:%M").to_string(),
+        FileValue::Boolean(b) => b.to_string(),
+        FileValue::Null => "-".to_owned(),
+    }
+}
+
+fn value_json(value: &FileValue) -> Value {
+    match value {
+        FileValue::Number(n) => whole(*n).map_or_else(|| (*n).into(), Value::from),
+        FileValue::String(s) => s.clone().into(),
+        FileValue::DateTime(t) => t.timestamp().into(),
+        FileValue::Boolean(b) => (*b).into(),
+        FileValue::Null => Value::Null,
+    }
+}
+
+/// A float holding a whole number small enough to be exact, as an integer.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the value is whole and within 2^53"
+)]
+fn whole(n: f64) -> Option<i64> {
+    (n.fract() == 0.0 && n.abs() < 9_007_199_254_740_992.0).then_some(n as i64)
 }
 
 /// The entry's type and permissions as `ls -l` shows them. A symbolic link

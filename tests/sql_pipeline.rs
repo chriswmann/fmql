@@ -741,3 +741,40 @@ fn cli_renames_matching_files() {
     assert_eq!(output.status.code(), Some(1));
     assert!(dir.path().join("it's.txt").exists());
 }
+
+#[test]
+fn cli_prints_grouped_rows_as_text_and_json() {
+    let dir = fixture();
+    let sql = format!(
+        "WITH RECURSIVE SELECT extension, COUNT(*), SUM(size), MIN(permissions) FROM {} \
+         WHERE NOT is_directory GROUP BY extension ORDER BY COUNT(*) DESC, extension",
+        dir.path().display()
+    );
+
+    let text = fmql(&["sql", &sql]);
+    assert!(
+        text.status.success(),
+        "{}",
+        String::from_utf8_lossy(&text.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(text.stdout).unwrap(),
+        "rs   2   9  640\ntxt  2  10  640\n"
+    );
+
+    let json = fmql(&["sql", &sql, "--format", "json"]);
+    let rows: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(
+        rows,
+        serde_json::json!([
+            {"extension": "rs", "count(*)": 2, "sum(size)": 9, "min(permissions)": 0o640},
+            {"extension": "txt", "count(*)": 2, "sum(size)": 10, "min(permissions)": 0o640},
+        ])
+    );
+
+    match fmql::run(&sql).unwrap() {
+        fmql::Output::Table(table) => assert_eq!(table.rows.len(), 2),
+        fmql::Output::Files(_) => panic!("expected rows"),
+    }
+    assert!(fmql::query(&sql).is_err());
+}
