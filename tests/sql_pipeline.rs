@@ -161,7 +161,7 @@ fn rejects_unsupported_or_incomplete_queries() {
         "SELECT * FROM . WHERE name =",
         "SELECT * FROM . WHERE extension = '.txt' AND size + 1 > 0",
         "SELECT * FROM . WHERE name LIKE '%x%' OR nonsense",
-        "SELECT * FROM . WHERE created > '2026-01-01'",
+        "SELECT * FROM . WHERE created > 'yesterday'",
         "SELECT * FROM WHERE name = 'x'",
         "UPDATE SET permissions = '600'",
         "SELECT * FROM . WHERE permissions = 888",
@@ -465,4 +465,50 @@ fn query_runs_parse_and_execute_together() {
         fmql::query("SELECT name FROM ."),
         Err(fmql::FMQLError::Parse(_))
     ));
+}
+
+#[test]
+fn metadata_attributes_filter_through_sql() {
+    let dir = fixture();
+    std::os::unix::fs::symlink(dir.path().join("alpha.rs"), dir.path().join("link.rs")).unwrap();
+    let me = nix::unistd::User::from_uid(nix::unistd::getuid())
+        .ok()
+        .flatten()
+        .map(|user| user.name);
+
+    assert_eq!(names(dir.path(), "", "is_symlink = true"), ["link.rs"]);
+    assert_eq!(
+        names(dir.path(), "", "extension = 'rs' AND NOT is_symlink"),
+        ["alpha.rs"]
+    );
+    // Without a user database entry for our uid, owners are null.
+    if let Some(me) = me {
+        assert_eq!(
+            names(
+                dir.path(),
+                "",
+                &format!("owner = '{me}' AND name LIKE 'b%'")
+            ),
+            ["beta.txt"]
+        );
+    }
+    assert_eq!(
+        names(dir.path(), "", "owner LIKE 'no-such-user-%'"),
+        Vec::<String>::new()
+    );
+    // Access times are optional too; an unavailable one is null and never matches.
+    let has_atime = fs::metadata(dir.path().join("beta.txt"))
+        .unwrap()
+        .accessed()
+        .is_ok();
+    assert_eq!(
+        names(
+            dir.path(),
+            "",
+            "accessed > '2000-01-01' AND name = 'beta.txt'"
+        ),
+        if has_atime { vec!["beta.txt"] } else { vec![] }
+    );
+    // Birth times are optional, so only check that the query is accepted.
+    parse_sql("SELECT * FROM . WHERE created BETWEEN '2000-01-01' AND '2100-01-01'").unwrap();
 }

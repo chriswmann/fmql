@@ -26,6 +26,7 @@ walkdir = "2.4.0"
 dirs = "5.0.1"
 serde = { version = "1.0.196", features = ["derive"] }
 serde_json = "1.0.113"
+nix = { version = "0.31", features = ["user"] }
 
 [dev-dependencies]
 tempfile = "3.10.0"

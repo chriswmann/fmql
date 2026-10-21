@@ -429,8 +429,10 @@ fn malformed_values_and_function_modifiers_are_rejected() {
         "is_directory BETWEEN false AND true",
         "name = NULL",
         "name = size",
-        "owner = 'bob'",
-        "is_symlink = true",
+        "owner = 1",
+        "is_symlink > true",
+        "created > 'not a date'",
+        "accessed BETWEEN 1 AND 2",
         "size LIKE '%'",
         "REGEXP(size, 'x')",
         "REGEXP(name)",
@@ -440,6 +442,31 @@ fn malformed_values_and_function_modifiers_are_rejected() {
         "REGEXP(name, 'x') = true",
         "name LIKE ANY ('x', 'y')",
     ] {
+        assert!(
+            parse_sql(&format!("SELECT * FROM . WHERE {condition}")).is_err(),
+            "{condition}"
+        );
+    }
+}
+
+#[test]
+fn bare_boolean_attributes_test_for_true() {
+    let FileQuery::Select {
+        condition: Some(FileCondition::Not(inner)),
+        ..
+    } = parse_sql("SELECT * FROM . WHERE NOT is_symlink").unwrap()
+    else {
+        panic!("expected NOT condition");
+    };
+    assert!(matches!(
+        *inner,
+        FileCondition::Compare {
+            attribute: FileAttribute::IsSymlink,
+            operator: ComparisonOperator::Eq,
+            value: FileValue::Boolean(true),
+        }
+    ));
+    for condition in ["name", "size", "is_directory AND size", "NOT owner"] {
         assert!(
             parse_sql(&format!("SELECT * FROM . WHERE {condition}")).is_err(),
             "{condition}"

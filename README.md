@@ -77,11 +77,15 @@ Keywords and attribute names are case-insensitive. `AND` binds more tightly than
 case-insensitive, while string comparisons and regular expressions are
 case-sensitive. LIKE uses `%` and `_` wildcards and has no `ESCAPE` support.
 
-Supported filter attributes are `name`, `path`, `extension` (strings), `size`
-(bytes), `permissions` (octal digits such as `644`, with `=` or `!=` only),
-`modified` (a quoted `YYYY-MM-DD` or RFC 3339 timestamp), `is_directory` and
-`is_executable` (booleans, with equality or inequality). `is_executable` tests the
-owner's execute bit. Bare dates mean midnight UTC. Extension comparisons accept
+Supported filter attributes are `name`, `path`, `extension`, `owner` (strings),
+`size` (bytes), `permissions` (octal digits such as `644`, with `=` or `!=` only),
+`modified`, `created`, `accessed` (each a quoted `YYYY-MM-DD` or RFC 3339
+timestamp), and `is_directory`, `is_executable`, `is_symlink` (booleans, with
+equality or inequality, or on their own as in `WHERE NOT is_symlink`).
+`is_executable` tests the owner's execute bit. `owner` is the user name for the
+file's uid. Bare dates mean midnight UTC. Metadata the system cannot supply, such
+as a creation time on a filesystem that does not record one or an owner missing
+from the user database, is null: it fails every comparison except `!=`. Extension comparisons accept
 either `'rs'` or `'.rs'`. Permission filters and updates both read octal digits
 from `0000` to `7777`, quoted or bare, as `chmod` does. A filter compares the
 permission bits only, so `permissions = 644` matches a `rw-r--r--` file.
@@ -96,8 +100,7 @@ embedded apostrophe. SQL comments and one optional trailing semicolon are allowe
 The parser uses `sqlparser` for tokens and expressions and requires the whole
 query to be understood before execution. Unsupported queries return an error:
 this includes projections other than `*`, sorting, grouping, limits, joins,
-subqueries, multiple statements, ownership/rename updates and attributes whose
-metadata is not implemented (`owner`, `created`, `accessed`, `is_symlink`).
+subqueries, multiple statements and ownership/rename updates.
 Malformed predicates, incompatible literal types and invalid regexes are also
 rejected, including on empty directories. Filesystem failures during an accepted
 update can still leave earlier files changed; updates are not transactional.

@@ -5,7 +5,8 @@ use std::fmt::Write;
 use crate::sql::executor::FileResult;
 
 /// Renders results as one `ls -l` style line per entry: type and permission
-/// bits, size in bytes, modification time in UTC, and path.
+/// bits, size in bytes, modification time in UTC, and path. A symbolic link
+/// shows `l` as its type, with its target's permissions and size.
 ///
 /// # Examples
 ///
@@ -22,6 +23,9 @@ use crate::sql::executor::FileResult;
 ///     extension: Some("txt".into()),
 ///     permissions: 0o100644,
 ///     modified: Utc.with_ymd_and_hms(2025, 3, 1, 9, 30, 0).unwrap(),
+///     created: None,
+///     accessed: None,
+///     is_symlink: false,
 ///     owner: None,
 /// };
 /// assert_eq!(
@@ -38,10 +42,13 @@ pub fn render_text(results: &[FileResult]) -> String {
         .unwrap_or(0);
     let mut out = String::new();
     for file in results {
+        let mut mode = mode_string(file.permissions, file.is_directory);
+        if file.is_symlink {
+            mode.replace_range(..1, "l");
+        }
         let _ = writeln!(
             out,
-            "{}  {:>size_width$}  {}  {}",
-            mode_string(file.permissions, file.is_directory),
+            "{mode}  {:>size_width$}  {}  {}",
             file.size,
             file.modified.format("%Y-%m-%d %H:%M"),
             file.path.display(),

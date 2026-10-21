@@ -4,10 +4,12 @@
 //! on the file system, such as querying files or updating file attributes.
 
 use chrono::{DateTime, Utc};
+use nix::unistd::{Uid, User};
 use regex::{Regex, RegexBuilder};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::fs::{self, Permissions};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use walkdir::WalkDir;
@@ -61,7 +63,16 @@ pub struct FileResult {
     /// The file modification time.
     #[serde(with = "chrono::serde::ts_seconds")]
     pub modified: DateTime<Utc>,
-    /// The file owner, if available.
+    /// The file creation time, if the filesystem records one.
+    #[serde(with = "chrono::serde::ts_seconds_option")]
+    pub created: Option<DateTime<Utc>>,
+    /// The file access time, if available.
+    #[serde(with = "chrono::serde::ts_seconds_option")]
+    pub accessed: Option<DateTime<Utc>>,
+    /// Whether the entry is a symbolic link. Other fields describe the link's
+    /// target, or the link itself when the target is missing.
+    pub is_symlink: bool,
+    /// The name of the file's owner, if the user database knows its uid.
     pub owner: Option<String>,
 }
 
@@ -146,6 +157,7 @@ fn execute_update(
         return Ok(updated_files);
     }
 
+    let mut owners = Owners::default();
     for file in matching_files(path, recursive, predicate.as_ref())? {
         // Setting permissions acts on a link's target, which may lie outside
         // the queried directory, so links are never updated.
@@ -156,7 +168,7 @@ fn execute_update(
             fs::set_permissions(&file.path, Permissions::from_mode(mode))?;
         }
         // Re-read the file info to get updated attributes
-        updated_files.push(create_file_result(&file.path)?);
+        updated_files.push(create_file_result(&file.path, &mut owners)?);
     }
 
     Ok(updated_files)
@@ -204,6 +216,7 @@ fn matching_files(
 /// Lists files in a directory, optionally recursively.
 fn list_files(dir_path: &Path, recursive: bool) -> Result<Vec<FileResult>> {
     let mut results = Vec::new();
+    let mut owners = Owners::default();
 
     let walker = if recursive {
         WalkDir::new(dir_path).follow_links(false).into_iter()
@@ -226,39 +239,55 @@ fn list_files(dir_path: &Path, recursive: bool) -> Result<Vec<FileResult>> {
             continue;
         }
 
-        let file_result = create_file_result(entry.path())?;
+        let file_result = create_file_result(entry.path(), &mut owners)?;
         results.push(file_result);
     }
 
     Ok(results)
 }
 
+/// Looks up owner names, remembering each uid so a directory of files with
+/// the same owner reads the user database once.
+#[derive(Default)]
+struct Owners(HashMap<u32, Option<String>>);
+
+impl Owners {
+    fn name(&mut self, uid: u32) -> Option<String> {
+        self.0
+            .entry(uid)
+            .or_insert_with(|| {
+                User::from_uid(Uid::from_raw(uid))
+                    .ok()
+                    .flatten()
+                    .map(|user| user.name)
+            })
+            .clone()
+    }
+}
+
 /// Creates a `FileResult` from a path.
-fn create_file_result(path: &Path) -> Result<FileResult> {
+fn create_file_result(path: &Path, owners: &mut Owners) -> Result<FileResult> {
+    let link = fs::symlink_metadata(path)?;
+    let is_symlink = link.file_type().is_symlink();
     // Describe a link by its target, falling back to the link itself when the
     // target is missing so one broken link cannot fail the whole query.
-    let metadata = fs::metadata(path).or_else(|_| fs::symlink_metadata(path))?;
+    let metadata = if is_symlink {
+        fs::metadata(path).unwrap_or(link)
+    } else {
+        link
+    };
 
     let name = path
         .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("")
-        .to_string();
+        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
 
     let extension = path
         .extension()
-        .and_then(|ext| ext.to_str())
-        .map(std::string::ToString::to_string);
+        .map(|ext| ext.to_string_lossy().into_owned());
 
     let modified = metadata
         .modified()
         .map_or_else(|_| Utc::now(), DateTime::<Utc>::from);
-
-    let permissions = metadata.permissions().mode();
-
-    // Getting the owner requires platform-specific code
-    // This is a simplified version
-    let owner = None;
 
     Ok(FileResult {
         path: path.to_path_buf(),
@@ -266,10 +295,18 @@ fn create_file_result(path: &Path) -> Result<FileResult> {
         size: metadata.len(),
         is_directory: metadata.is_dir(),
         extension,
-        permissions,
+        permissions: metadata.permissions().mode(),
         modified,
-        owner,
+        created: timestamp(metadata.created()),
+        accessed: timestamp(metadata.accessed()),
+        is_symlink,
+        owner: owners.name(metadata.uid()),
     })
+}
+
+/// Converts a timestamp the platform or filesystem may not provide.
+fn timestamp(time: std::io::Result<std::time::SystemTime>) -> Option<DateTime<Utc>> {
+    time.ok().map(DateTime::<Utc>::from)
 }
 
 /// The type of value an attribute produces.
@@ -290,14 +327,15 @@ fn attribute_kind(attribute: &FileAttribute) -> Result<Kind> {
         | FileAttribute::Extension
         | FileAttribute::Owner => Ok(Kind::Text),
         FileAttribute::Size | FileAttribute::Permissions => Ok(Kind::Number),
-        FileAttribute::Modified => Ok(Kind::Time),
-        FileAttribute::IsDirectory | FileAttribute::IsExecutable => Ok(Kind::Boolean),
-        FileAttribute::All
-        | FileAttribute::Created
-        | FileAttribute::Accessed
-        | FileAttribute::IsSymlink => Err(ExecutorError::UnsupportedAttribute(format!(
-            "Attribute not supported in conditions: {attribute:?}"
-        ))),
+        FileAttribute::Modified | FileAttribute::Created | FileAttribute::Accessed => {
+            Ok(Kind::Time)
+        }
+        FileAttribute::IsDirectory | FileAttribute::IsExecutable | FileAttribute::IsSymlink => {
+            Ok(Kind::Boolean)
+        }
+        FileAttribute::All => Err(ExecutorError::UnsupportedAttribute(
+            "* is not an attribute that can be compared".to_string(),
+        )),
     }
 }
 
@@ -477,8 +515,8 @@ fn like_regex(pattern: &str, case_sensitive: bool) -> Result<Regex> {
         .build()?)
 }
 
-/// Gets the value of a file attribute. [`Predicate::compile`] has already
-/// rejected attributes whose metadata is unavailable.
+/// Gets the value of a file attribute. Metadata the platform does not
+/// provide is null. [`Predicate::compile`] has already rejected `*`.
 #[expect(
     clippy::cast_precision_loss,
     reason = "sizes above 2^53 bytes (8 PiB) are not a practical concern"
@@ -499,10 +537,10 @@ fn attribute_value(file: &FileResult, attribute: &FileAttribute) -> FileValue {
             .map_or(FileValue::Null, FileValue::String),
         // Check if file has executable bit set for user
         FileAttribute::IsExecutable => FileValue::Boolean(file.permissions & 0o100 != 0),
-        FileAttribute::All
-        | FileAttribute::Created
-        | FileAttribute::Accessed
-        | FileAttribute::IsSymlink => unreachable!("compile rejects {attribute:?}"),
+        FileAttribute::Created => file.created.map_or(FileValue::Null, FileValue::DateTime),
+        FileAttribute::Accessed => file.accessed.map_or(FileValue::Null, FileValue::DateTime),
+        FileAttribute::IsSymlink => FileValue::Boolean(file.is_symlink),
+        FileAttribute::All => unreachable!("compile rejects {attribute:?}"),
     }
 }
 
