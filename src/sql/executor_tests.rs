@@ -649,3 +649,139 @@ fn test_order_by_star_is_rejected() {
         "{err:?}"
     );
 }
+
+#[cfg(unix)]
+fn mode_of(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path).unwrap().permissions().mode() & 0o7777
+}
+
+#[cfg(unix)]
+fn three_files(dir: &Path) -> Vec<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    ["a", "b", "c"]
+        .iter()
+        .map(|name| {
+            let path = create_test_file(dir, name, name).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            path
+        })
+        .collect()
+}
+
+#[test]
+#[cfg(unix)]
+fn test_failed_update_rolls_back_earlier_changes() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempdir().unwrap();
+    let paths = three_files(dir.path());
+    let failing = paths[2].clone();
+
+    let err = super::apply_mode(&paths, 0o755, |path, mode| {
+        if path == failing && mode == 0o755 {
+            return Err(std::io::Error::other("injected"));
+        }
+        fs::set_permissions(path, fs::Permissions::from_mode(mode))
+    })
+    .unwrap_err();
+
+    assert!(
+        matches!(&err, ExecutorError::UpdateFailed { path, .. } if *path == failing),
+        "{err:?}"
+    );
+    assert!(err.to_string().contains("rolled back"), "{err}");
+    for path in &paths {
+        assert_eq!(mode_of(path), 0o600, "{}", path.display());
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn test_failed_rollback_names_the_files_left_changed() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempdir().unwrap();
+    let paths = three_files(dir.path());
+    let (stuck, failing) = (paths[0].clone(), paths[2].clone());
+
+    let err = super::apply_mode(&paths, 0o755, |path, mode| {
+        if (path == failing && mode == 0o755) || (path == stuck && mode == 0o600) {
+            return Err(std::io::Error::other("injected"));
+        }
+        fs::set_permissions(path, fs::Permissions::from_mode(mode))
+    })
+    .unwrap_err();
+
+    let ExecutorError::RollbackFailed { unrestored, .. } = &err else {
+        panic!("{err:?}");
+    };
+    assert_eq!(unrestored, std::slice::from_ref(&stuck));
+    assert!(
+        err.to_string().contains(&stuck.display().to_string()),
+        "{err}"
+    );
+    assert_eq!(mode_of(&stuck), 0o755);
+    assert_eq!(mode_of(&paths[1]), 0o600);
+    assert_eq!(mode_of(&failing), 0o600);
+}
+
+#[test]
+#[cfg(unix)]
+fn test_successful_update_reports_every_changed_file() {
+    let dir = tempdir().unwrap();
+    let paths = three_files(dir.path());
+    let query = FileQuery::Update {
+        path: dir.path().to_path_buf(),
+        recursive: false,
+        updates: vec![FileAttributeUpdate {
+            attribute: FileAttribute::Permissions,
+            value: "640".to_string(),
+        }],
+        condition: None,
+    };
+
+    let updated = execute_query(&query).unwrap();
+
+    assert_eq!(updated.len(), 3);
+    assert!(updated.iter().all(|f| f.permissions & 0o7777 == 0o640));
+    // The file-type bits survive alongside the new permission bits.
+    assert!(
+        updated
+            .iter()
+            .all(|f| f.permissions & 0o170_000 == 0o100_000)
+    );
+    for path in &paths {
+        assert_eq!(mode_of(path), 0o640);
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn test_update_query_surfaces_a_rolled_back_failure() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempdir().unwrap();
+    let paths = three_files(dir.path());
+    let failing = paths[1].clone();
+    let updates = [FileAttributeUpdate {
+        attribute: FileAttribute::Permissions,
+        value: "755".to_string(),
+    }];
+
+    let err = super::update_with(dir.path(), false, &updates, None, |path, mode| {
+        if path == failing && mode == 0o755 {
+            return Err(std::io::Error::other("injected"));
+        }
+        fs::set_permissions(path, fs::Permissions::from_mode(mode))
+    })
+    .unwrap_err();
+
+    assert!(
+        matches!(&err, ExecutorError::UpdateFailed { path, .. } if *path == failing),
+        "{err:?}"
+    );
+    for path in &paths {
+        assert_eq!(mode_of(path), 0o600, "{}", path.display());
+    }
+}

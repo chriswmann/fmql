@@ -42,6 +42,38 @@ pub enum ExecutorError {
     /// Error when a value is of the wrong type.
     #[error("Type error: {0}")]
     TypeError(String),
+
+    /// An update failed part way; every earlier change was undone.
+    #[error("Failed to update {}: {source}; earlier changes were rolled back", path.display())]
+    UpdateFailed {
+        /// The file that could not be changed.
+        path: PathBuf,
+        /// Why the change failed.
+        source: std::io::Error,
+    },
+
+    /// An update failed part way and some earlier changes could not be undone.
+    #[error(
+        "Failed to update {}: {source}; could not restore the previous permissions of {}",
+        path.display(),
+        display_paths(unrestored)
+    )]
+    RollbackFailed {
+        /// The file that could not be changed.
+        path: PathBuf,
+        /// Why the change failed.
+        source: std::io::Error,
+        /// Files left with the new permissions.
+        unrestored: Vec<PathBuf>,
+    },
+}
+
+fn display_paths(paths: &[PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Result type for executor operations.
@@ -187,31 +219,80 @@ fn execute_update(
     updates: &[FileAttributeUpdate],
     condition: Option<&FileCondition>,
 ) -> Result<Vec<FileResult>> {
+    update_with(path, recursive, updates, condition, |path, mode| {
+        fs::set_permissions(path, Permissions::from_mode(mode))
+    })
+}
+
+/// [`execute_update`] with the permission setter supplied, so tests can make
+/// a change fail part way through a real query.
+fn update_with(
+    path: &Path,
+    recursive: bool,
+    updates: &[FileAttributeUpdate],
+    condition: Option<&FileCondition>,
+    set_mode: impl FnMut(&Path, u32) -> std::io::Result<()>,
+) -> Result<Vec<FileResult>> {
     let modes = updates
         .iter()
         .map(permission_mode)
         .collect::<Result<Vec<_>>>()?;
     let predicate = condition.map(Predicate::compile).transpose()?;
-    let mut updated_files = Vec::new();
-    if modes.is_empty() {
-        return Ok(updated_files);
-    }
+    // Later assignments win, so only the last mode needs applying.
+    let Some(&mode) = modes.last() else {
+        return Ok(Vec::new());
+    };
 
-    let mut owners = Owners::default();
-    for file in matching_files(path, recursive, predicate.as_ref())? {
+    let mut targets: Vec<FileResult> = matching_files(path, recursive, predicate.as_ref())?
+        .into_iter()
         // Setting permissions acts on a link's target, which may lie outside
         // the queried directory, so links are never updated.
-        if fs::symlink_metadata(&file.path)?.file_type().is_symlink() {
-            continue;
-        }
-        for &mode in &modes {
-            fs::set_permissions(&file.path, Permissions::from_mode(mode))?;
-        }
-        // Re-read the file info to get updated attributes
-        updated_files.push(create_file_result(&file.path, &mut owners)?);
-    }
+        .filter(|file| !file.is_symlink)
+        .collect();
+    let paths: Vec<PathBuf> = targets.iter().map(|file| file.path.clone()).collect();
+    apply_mode(&paths, mode, set_mode)?;
 
-    Ok(updated_files)
+    // Only the permission bits changed. Updating the listed results, rather
+    // than re-reading metadata, means a successful update cannot then fail.
+    for file in &mut targets {
+        file.permissions = (file.permissions & !0o7777) | mode;
+    }
+    Ok(targets)
+}
+
+/// Sets `mode` on every path, or on none of them: if a change fails, the paths
+/// already changed get their previous permission bits back, newest first.
+fn apply_mode(
+    paths: &[PathBuf],
+    mode: u32,
+    mut set_mode: impl FnMut(&Path, u32) -> std::io::Result<()>,
+) -> Result<()> {
+    let mut changed: Vec<(&Path, u32)> = Vec::new();
+    for path in paths {
+        let previous = fs::metadata(path).map(|m| m.permissions().mode() & 0o7777);
+        match previous.and_then(|previous| set_mode(path, mode).map(|()| previous)) {
+            Ok(previous) => changed.push((path, previous)),
+            Err(source) => {
+                let unrestored: Vec<PathBuf> = changed
+                    .iter()
+                    .rev()
+                    .filter(|(path, previous)| set_mode(path, *previous).is_err())
+                    .map(|(path, _)| path.to_path_buf())
+                    .collect();
+                let path = path.clone();
+                return Err(if unrestored.is_empty() {
+                    ExecutorError::UpdateFailed { path, source }
+                } else {
+                    ExecutorError::RollbackFailed {
+                        path,
+                        source,
+                        unrestored,
+                    }
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Reads the octal mode an update sets, rejecting attributes that cannot be
