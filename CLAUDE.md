@@ -14,10 +14,11 @@ cargo run -- sql "SELECT * FROM . WHERE extension = 'rs'"   # run the CLI
 cargo run --example sql_queries    # run an example end to end
 ```
 
-CI (`.github/workflows/rust.yml`) runs `cargo fmt --check`, `cargo build --all-targets`,
-`cargo test`, the `sql_queries` example and `cargo clippy --all-targets -- -D warnings`
+CI (`.github/workflows/rust.yml`) runs `cargo fmt --check`, `cargo build --all-targets --locked`,
+`cargo test --locked`, the `sql_queries` example and `cargo clippy --all-targets -- -D warnings`
 on pushes to `main` and on pull requests targeting `main`. `Cargo.toml` enables
-`clippy::pedantic`, so pedantic warnings fail CI too.
+`clippy::pedantic`, so pedantic warnings fail CI too. `Cargo.lock` is committed;
+run `cargo update` deliberately and commit the result.
 
 ## Architecture
 
