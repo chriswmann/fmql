@@ -273,4 +273,3 @@ fn test_execute_update_permissions() {
         assert_eq!(file.permissions & 0o777, 0o644);
     }
 }
-

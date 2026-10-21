@@ -452,7 +452,11 @@ fn compare_values(
         // Coerce a String into DateTime when the other operand is DateTime.
         (FileValue::DateTime(l), FileValue::String(r)) => {
             if let Ok(parsed) = parse_date_string(r) {
-                compare_values(&FileValue::DateTime(*l), operator, &FileValue::DateTime(parsed))
+                compare_values(
+                    &FileValue::DateTime(*l),
+                    operator,
+                    &FileValue::DateTime(parsed),
+                )
             } else {
                 Err(ExecutorError::TypeError(format!(
                     "Cannot parse '{}' as a date for comparison with DateTime",
@@ -462,7 +466,11 @@ fn compare_values(
         }
         (FileValue::String(l), FileValue::DateTime(r)) => {
             if let Ok(parsed) = parse_date_string(l) {
-                compare_values(&FileValue::DateTime(parsed), operator, &FileValue::DateTime(*r))
+                compare_values(
+                    &FileValue::DateTime(parsed),
+                    operator,
+                    &FileValue::DateTime(*r),
+                )
             } else {
                 Err(ExecutorError::TypeError(format!(
                     "Cannot parse '{}' as a date for comparison with DateTime",
@@ -503,4 +511,3 @@ mod tests;
 #[cfg(test)]
 #[path = "bug_regression_tests.rs"]
 mod bug_regression_tests;
-

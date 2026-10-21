@@ -36,9 +36,9 @@
 //! // Now use the query with an executor...
 //! ```
 
-use std::path::PathBuf;
 use chrono::{DateTime, Utc};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 /// The main query structure representing a complete file management operation.
 ///
@@ -73,7 +73,7 @@ pub enum FileQuery {
         /// The conditions to filter files by (None means all files).
         condition: Option<FileCondition>,
     },
-    
+
     /// A query to update file attributes for files matching specific criteria.
     ///
     /// # Examples
@@ -155,7 +155,7 @@ pub enum FileAttribute {
 /// // In an UPDATE query:
 /// // UPDATE ... SET permissions = '755'
 /// let update = FileAttributeUpdate {
-///     attribute: FileAttribute::Permissions, 
+///     attribute: FileAttribute::Permissions,
 ///     value: "755".to_string(),
 /// };
 /// ```
@@ -318,4 +318,4 @@ pub enum FileValue {
     Boolean(bool),
     /// A null value.
     Null,
-} 
+}

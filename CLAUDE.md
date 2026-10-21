@@ -14,7 +14,7 @@ cargo run -- sql "SELECT * FROM . WHERE extension = 'rs'"   # run the CLI
 cargo run --example sql_queries    # run an example end to end
 ```
 
-CI (`.github/workflows/rust.yml`) only runs `cargo build`, `cargo test`, `cargo clippy`,
+CI (`.github/workflows/rust.yml`) runs `cargo fmt --check`, `cargo build`, `cargo test`, `cargo clippy`,
 on pushes to `main` and on pull requests targeting `main`. Clippy warnings do not fail
 CI, so a green tick does not mean lint-clean.
 
@@ -61,12 +61,12 @@ temporary directories, including rejected updates that must not change files.
   can partially apply if a later filesystem operation fails; they are not atomic.
 - Updates skip symbolic links so they cannot change files outside the queried
   directory. Listing reads metadata through links, falling back to the link itself.
-- `FMQLError` remains unused by the binary. Lint and formatting debt remains
-  outside the parser work. `OVERHAUL_PLAN.md` retains the original review as history.
+- `FMQLError` remains unused by the binary. Lint debt remains; formatting is
+  enforced by CI. `OVERHAUL_PLAN.md` retains the original review as history.
 
 ## Conventions
 
-- Rust 2024 edition. British English in prose, no em dashes.
+- Rust 2024 edition, formatted with `cargo fmt`. British English in prose, no em dashes.
 - Per-module error enums via `thiserror`, with a module-local `Result<T>` alias.
 - `examples/group_by_updates.rs` uses `CONCAT`/`MONTH`/`DAY` SQL functions that no
   layer supports; parsing now returns an error. Do not treat it as a working reference.

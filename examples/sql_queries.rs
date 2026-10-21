@@ -388,4 +388,3 @@ fn update_queries(dir_path: &Path) {
         }
     }
 }
-

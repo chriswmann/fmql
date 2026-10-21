@@ -54,7 +54,6 @@ pub struct FileDialect {
 }
 
 impl Dialect for FileDialect {
-
     /// Determines whether a character can start an identifier.
     ///
     /// This implementation extends the generic SQL dialect to allow
@@ -68,8 +67,12 @@ impl Dialect for FileDialect {
     /// * `bool` - True if the character can start an identifier
     fn is_identifier_start(&self, ch: char) -> bool {
         // Allow ~ for home directory paths and characters that are valid in file paths
-        ch == '~' || ch == '/' || ch == '.' || ch == '_' || ch == '-' || 
-        self.generic.is_identifier_start(ch)
+        ch == '~'
+            || ch == '/'
+            || ch == '.'
+            || ch == '_'
+            || ch == '-'
+            || self.generic.is_identifier_start(ch)
     }
 
     /// Determines whether a character can be part of an identifier.
@@ -85,9 +88,9 @@ impl Dialect for FileDialect {
     /// * `bool` - True if the character can be part of an identifier
     fn is_identifier_part(&self, ch: char) -> bool {
         // Allow characters that can be part of file paths
-        ch == '/' || ch == '\\' || ch == '.' || ch == '_' || ch == '-' || ch == '~' || 
-        ch == ':' || // For Windows paths (C:)
-        self.generic.is_identifier_part(ch)
+        // ':' allows Windows drive prefixes such as `C:`.
+        matches!(ch, '/' | '\\' | '.' | '_' | '-' | '~' | ':')
+            || self.generic.is_identifier_part(ch)
     }
 
     /// Determines whether a character can start a delimited identifier.
@@ -102,4 +105,4 @@ impl Dialect for FileDialect {
     fn is_delimited_identifier_start(&self, ch: char) -> bool {
         self.generic.is_delimited_identifier_start(ch)
     }
-} 
+}

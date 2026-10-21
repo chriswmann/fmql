@@ -5,7 +5,7 @@
 //! file system operations.
 //!
 //! # Components
-//! 
+//!
 //! - `dialect`: Defines a custom SQL dialect for file operations
 //! - `parser`: Parses SQL strings into abstract syntax tree (AST) structures
 //! - `executor`: Executes the parsed queries against the file system
@@ -56,11 +56,11 @@
 //! println!("Updated permissions for {} files", updated_files.len());
 //! ```
 
-pub mod dialect;
-pub mod parser;
-pub mod executor;
 pub mod ast;
+pub mod dialect;
+pub mod executor;
+pub mod parser;
 
 // Re-exports for convenience
+pub use executor::execute_query;
 pub use parser::parse_sql;
-pub use executor::execute_query; 
