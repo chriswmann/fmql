@@ -36,9 +36,11 @@ sql string ──parse_sql()──▶ FileQuery (AST) ──execute_query()─�
   builds `FileResult`s, and evaluates conditions. Defines its own `ExecutorError`.
 - `src/sql/dialect.rs` — `FileDialect`, a custom `sqlparser` dialect allowing `~`, `/`,
   `.` etc. in identifiers.
-- `src/error.rs` — `FMQLError`. The crate's two real error types live in `parser.rs`
-  and `executor.rs` instead; there is no unified error type.
-- `src/main.rs` — `clap` CLI with one subcommand, `sql`.
+- `src/error.rs` — `FMQLError`, wrapping `ParserError` and `ExecutorError` via `#[from]`.
+  `fmql::query()` (in `lib.rs`) parses and executes in one call and returns it.
+- `src/output.rs` — `render_text()`, the CLI's `ls -l` style text output.
+- `src/main.rs` — `clap` CLI with one subcommand, `sql`, and a `--format text|json` flag.
+  Errors go to stderr with exit code 1; clap usage errors exit with 2.
 
 Unit tests live in sibling `*_tests.rs` files pulled in via `#[cfg(test)] #[path = "..."] mod tests;`.
 `tests/sql_pipeline.rs` exercises the parser, executor and CLI together against
@@ -64,7 +66,7 @@ temporary directories, including rejected updates that must not change files.
   can still partially apply if a later filesystem operation fails.
 - Updates skip symbolic links so they cannot change files outside the queried
   directory. Listing reads metadata through links, falling back to the link itself.
-- `FMQLError` remains unused by the binary. `OVERHAUL_PLAN.md` retains the original review as history.
+- `OVERHAUL_PLAN.md` retains the original review as history.
 
 ## Conventions
 

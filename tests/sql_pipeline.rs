@@ -395,3 +395,74 @@ fn broken_symbolic_links_are_listed_without_failing_the_query() {
         ["alpha.rs", "broken.rs"]
     );
 }
+
+fn fmql(args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_fmql"))
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn cli_text_output_lists_one_entry_per_line() {
+    let dir = fixture();
+    let sql = format!(
+        "SELECT * FROM {} WHERE extension = 'rs'",
+        dir.path().display()
+    );
+    let output = fmql(&["sql", &sql]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<_> = stdout.lines().collect();
+    assert_eq!(lines.len(), 1, "{stdout}");
+    assert!(lines[0].starts_with("-rw-r-----  4  "), "{stdout}");
+    assert!(
+        lines[0].ends_with(&format!("  {}", dir.path().join("alpha.rs").display())),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn cli_rejects_unknown_output_formats() {
+    let output = fmql(&["sql", "SELECT * FROM .", "--format", "yaml"]);
+    assert_eq!(output.status.code(), Some(2));
+    // Check the names clap lists, not its wording, which may change in 4.x.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for word in ["yaml", "text", "json"] {
+        assert!(stderr.contains(word), "{stderr}");
+    }
+}
+
+#[test]
+fn cli_reports_execution_errors_separately_from_parse_errors() {
+    let dir = fixture();
+    let sql = format!("SELECT * FROM {}", dir.path().join("missing").display());
+    let output = fmql(&["sql", &sql]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).starts_with("Error executing query: "),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
+}
+
+#[test]
+fn query_runs_parse_and_execute_together() {
+    let dir = fixture();
+    let sql = format!(
+        "WITH RECURSIVE SELECT * FROM {} WHERE extension = 'rs'",
+        dir.path().display()
+    );
+    let mut names: Vec<_> = fmql::query(&sql)
+        .unwrap()
+        .into_iter()
+        .map(|f| f.name)
+        .collect();
+    names.sort();
+    assert_eq!(names, ["alpha.rs", "child.rs"]);
+    assert!(matches!(
+        fmql::query("SELECT name FROM ."),
+        Err(fmql::FMQLError::Parse(_))
+    ));
+}
