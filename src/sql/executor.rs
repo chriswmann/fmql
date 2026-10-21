@@ -336,12 +336,64 @@ enum Op {
 }
 
 /// Applies an [`Op`] to the real filesystem.
+///
+/// Listing skips symbolic links, but one could replace a file after the
+/// update is planned, so neither owner nor mode changes follow links.
 fn apply_op(path: &Path, op: &Op) -> std::io::Result<()> {
     match op {
-        Op::SetMode(mode) => fs::set_permissions(path, Permissions::from_mode(*mode)),
-        Op::SetOwner(uid) => std::os::unix::fs::chown(path, Some(*uid), None),
+        Op::SetMode(mode) => chmod_no_follow(path, *mode),
+        Op::SetOwner(uid) => std::os::unix::fs::lchown(path, Some(*uid), None),
         Op::Rename(to) => rename_no_replace(path, to),
     }
+}
+
+/// Sets the permission bits of `path` without following a symbolic link.
+/// Linux cannot change a link's own mode, so there a link is an error;
+/// systems that can, such as macOS, change the link itself.
+fn chmod_no_follow(path: &Path, mode: u32) -> std::io::Result<()> {
+    use nix::errno::Errno;
+    use nix::fcntl::AT_FDCWD;
+    use nix::sys::stat::{FchmodatFlags, Mode, fchmodat};
+
+    let bits = nix::libc::mode_t::try_from(mode).map_err(|_| Errno::EINVAL)?;
+    match fchmodat(
+        AT_FDCWD,
+        path,
+        Mode::from_bits_retain(bits),
+        FchmodatFlags::NoFollowSymlink,
+    ) {
+        Ok(()) => Ok(()),
+        // A link, or an older C library that cannot refuse to follow one.
+        #[cfg(target_os = "linux")]
+        Err(Errno::ENOTSUP | Errno::ENOSYS) => chmod_through_descriptor(path, mode),
+        Err(errno) => Err(errno.into()),
+    }
+}
+
+/// Sets the permission bits through an `O_PATH` descriptor for `path` itself,
+/// as newer C libraries do, so nothing swapped in at `path` after it is
+/// opened can redirect the change. It needs no read permission and fails on
+/// a symbolic link.
+#[cfg(target_os = "linux")]
+fn chmod_through_descriptor(path: &Path, mode: u32) -> std::io::Result<()> {
+    use nix::fcntl::{OFlag, open};
+    use nix::sys::stat::{Mode, SFlag, fstat};
+    use std::os::fd::AsRawFd;
+
+    let fd = open(
+        path,
+        OFlag::O_PATH | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    )?;
+    if SFlag::from_bits_truncate(fstat(&fd)?.st_mode) & SFlag::S_IFMT == SFlag::S_IFLNK {
+        return Err(std::io::Error::other(format!(
+            "{} is a symbolic link",
+            path.display()
+        )));
+    }
+    // This names the file the descriptor holds, not whatever is now at `path`.
+    let held = format!("/proc/self/fd/{}", fd.as_raw_fd());
+    fs::set_permissions(held, Permissions::from_mode(mode))
 }
 
 /// Renames `from` to `to`, failing with `AlreadyExists` rather than replacing

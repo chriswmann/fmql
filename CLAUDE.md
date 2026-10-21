@@ -82,7 +82,9 @@ temporary directories, including rejected updates that must not change files.
   time `rename_no_replace` (`renameat2(RENAME_NOREPLACE)` on Linux glibc, a
   check-then-rename elsewhere) refuses to replace anything that appeared since.
 - Updates skip symbolic links so they cannot change files outside the queried
-  directory. Listing reads metadata through links, falling back to the link itself.
+  directory, and `apply_op` (`lchown`, `chmod_no_follow`) refuses to follow a
+  link that replaced a file after planning. Listing reads metadata through
+  links, falling back to the link itself.
 - `OVERHAUL_PLAN.md` retains the original review as history.
 
 ## Conventions
